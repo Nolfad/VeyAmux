@@ -130,7 +130,7 @@ Item {
         Rectangle {
             anchors { left: parent.left; bottom: parent.bottom; margins: 22 }
             width: psT.implicitWidth + 28; height: 38; radius: 10 * Theme.round; color: m0.containsMouse ? Theme.surfaceHover : Theme.surface
-            Text { id: psT; font.family: Theme.font; anchors.centerIn: parent; text: "PlayStation Remote Play"; color: Theme.text; font.pixelSize: 13 }
+            Text { id: psT; font.family: Theme.font; anchors.centerIn: parent; text: tr("remotePlayTitle"); color: Theme.text; font.pixelSize: 13 }
             MouseArea { id: m0; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { dlg.visible = false; dlg.closed(); dlg.remotePlay() } } }
         Row {
             anchors { right: parent.right; bottom: parent.bottom; margins: 22 }

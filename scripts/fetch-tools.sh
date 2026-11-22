@@ -1,28 +1,56 @@
 #!/usr/bin/env bash
-# Downloads DXC (HLSL->SPIR-V), wgpu-native (the demo scene's WebGPU) and the AppImage tooling into .tools
+# Fetch the exact tools used for the Linux x86-64 AppImage build.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-T="$ROOT/.tools"; mkdir -p "$T/dxc" "$T/appimage"
-if [ ! -x "$T/dxc/bin/dxc" ]; then
-  if [ -n "${GITHUB_TOKEN:-}" ] && command -v gh >/dev/null; then   # CI: authenticated, no API rate limit
-    GH_TOKEN="$GITHUB_TOKEN" gh release download -R microsoft/DirectXShaderCompiler -p 'linux_dxc*' -O "$T/dxc.tgz" --clobber
+T="$ROOT/.tools"
+mkdir -p "$T/appimage"
+
+verified() {
+  printf '%s  %s\n' "$2" "$1" | sha256sum --check --status
+}
+
+fetch() {
+  local url="$1" file="$2" checksum="$3" tmp
+  if [[ -f "$file" ]] && verified "$file" "$checksum"; then return; fi
+  tmp=$(mktemp "$file.XXXXXX")
+  if curl --fail --location --silent --show-error --retry 3 -o "$tmp" "$url" && verified "$tmp" "$checksum"; then
+    mv -f "$tmp" "$file"
   else
-    url=$(curl -sL https://api.github.com/repos/microsoft/DirectXShaderCompiler/releases/latest \
-          | python3 -c "import json,sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'].startswith('linux_dxc')))")
-    echo "DXC: $url"; curl -sL -o "$T/dxc.tgz" "$url"
+    rm -f "$tmp"
+    echo "Could not obtain a verified copy of $url" >&2
+    return 1
   fi
-  tar xzf "$T/dxc.tgz" -C "$T/dxc"; chmod +x "$T/dxc/bin/dxc"
+}
+
+release=https://github.com
+dxc_sha=96faadc7f5c282d2ffda49804beb4c3ee38127bc252b723234e3c5cdf7aa39a1
+fetch "$release/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/linux_dxc_2026_09_28.x86_x64.tar.gz" "$T/dxc.tgz" "$dxc_sha"
+if [[ ! -x "$T/dxc/bin/dxc" || ! -f "$T/dxc/.$dxc_sha" ]]; then
+  dxc_dir=$(mktemp -d "$T/dxc.XXXXXX")
+  tar xzf "$T/dxc.tgz" -C "$dxc_dir"
+  chmod +x "$dxc_dir/bin/dxc"
+  touch "$dxc_dir/.$dxc_sha"
+  rm -rf "$T/dxc"
+  mv "$dxc_dir" "$T/dxc"
 fi
-# wgpu-native: WebGPU on Vulkan for the demo scene (Abyssal Garden), a fixed release, checked
-WGPU_VER=v29.0.0.0
-WGPU_SHA=cf614af80f23c6364a13f6569e7ae4ca7367ebf6062e3d3d6e80e205264636b4
-if [ ! -f "$T/wgpu/lib/libwgpu_native.a" ]; then
-  curl -sL --fail -o "$T/wgpu.zip" "https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_VER/wgpu-linux-x86_64-release.zip"
-  echo "$WGPU_SHA  $T/wgpu.zip" | sha256sum -c -
-  rm -rf "$T/wgpu"; mkdir -p "$T/wgpu"; (cd "$T/wgpu" && python3 -m zipfile -e "$T/wgpu.zip" .)
+
+wgpu_sha=cf614af80f23c6364a13f6569e7ae4ca7367ebf6062e3d3d6e80e205264636b4
+fetch "$release/gfx-rs/wgpu-native/releases/download/v29.0.0.0/wgpu-linux-x86_64-release.zip" "$T/wgpu.zip" "$wgpu_sha"
+if [[ ! -f "$T/wgpu/lib/libwgpu_native.a" || ! -f "$T/wgpu/.$wgpu_sha" ]]; then
+  wgpu_dir=$(mktemp -d "$T/wgpu.XXXXXX")
+  python3 -m zipfile -e "$T/wgpu.zip" "$wgpu_dir"
+  touch "$wgpu_dir/.$wgpu_sha"
+  rm -rf "$T/wgpu"
+  mv "$wgpu_dir" "$T/wgpu"
 fi
-get() { [ -x "$T/appimage/$(basename "$1")" ] || { curl -sL --fail -o "$T/appimage/$(basename "$1")" "$1"; chmod +x "$T/appimage/$(basename "$1")"; }; }
-get https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-get https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-get https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-echo "tools ready in $T"
+
+fetch "$release/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage" \
+      "$T/appimage/linuxdeploy-x86_64.AppImage" c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+fetch "$release/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage" \
+      "$T/appimage/linuxdeploy-plugin-qt-x86_64.AppImage" 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+fetch "$release/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage" \
+      "$T/appimage/appimagetool-x86_64.AppImage" ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+fetch "$release/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64" \
+      "$T/appimage/runtime-x86_64" 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+chmod +x "$T/appimage/"*.AppImage "$T/appimage/runtime-x86_64"
+echo "Verified tools in $T"

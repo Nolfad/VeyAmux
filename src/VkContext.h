@@ -58,6 +58,9 @@ public:
     VkCommandBuffer active() const { return active_; }   // the buffer dispatch()/computeBarrier() record into
     VkFormat lumaFormat() const { return lumaFormat_; }
 
+    // A dedicated device-local allocation that CUDA can import through an opaque file descriptor.
+    bool createCudaExchange(VkDeviceSize bytes, BufferRes& buffer, VkDeviceSize& allocationSize, int& fd, std::string& error);
+    bool waitExternal(VkSemaphore semaphore, std::string& error);
     BufferRes createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostCachedReadback);
     void destroy(BufferRes& b);
     // Images are created in GENERAL layout (all VeyAmux passes use GENERAL).
@@ -76,16 +79,20 @@ public:
     void destroy(VkPipeline p);
 
     // Per-frame command recording.
-    void beginFrame();
+    void beginFrame(int slot = 0);
     // Record into a command buffer owned by someone else (Qt's frame). slot = Qt frame slot (descriptor/UBO ring).
     void beginExternal(VkCommandBuffer cb, int slot);
+    // Split a Qt frame into an app-owned producer and Qt's consumer on the same queue.
+    bool beginInteropFrame(int slot, std::string& error);
+    bool submitInterop(VkSemaphore signal, std::string& error);
+    void resumeExternal(VkCommandBuffer cb) { active_ = cb; }
     void computeBarrier();   // compute/transfer -> compute/transfer
     void dispatch(VkPipeline pipeline,
                   const ImageRes* const* sampled, uint32_t sampledCount,
                   const ImageRes* const* storage, uint32_t storageCount,
                   const void* uniform, uint32_t uniformSize,
                   uint32_t groupsX, uint32_t groupsY);
-    bool submitAndWait(std::string& error);
+    bool submitAndWait(std::string& error, VkSemaphore signal = VK_NULL_HANDLE);
 
 private:
     bool finishInit(std::string& error, bool shared);
@@ -99,6 +106,7 @@ private:
     uint32_t family_ = 0;
     VkPhysicalDeviceMemoryProperties memProps_{};
     VkCommandPool pool_ = VK_NULL_HANDLE;
+    VkCommandBuffer interopCmds_[kSlots]{};
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;

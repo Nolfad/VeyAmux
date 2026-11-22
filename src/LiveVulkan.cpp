@@ -3,11 +3,13 @@
 #include <QImage>
 #include <QMetaObject>
 #include <QQuickWindow>
+#include <QScreen>
 #include <QSGRendererInterface>
 #include <QTimer>
 #include <algorithm>
 #include <QDebug>
 #include <chrono>
+#include <cmath>
 
 using namespace veyamux;
 
@@ -100,6 +102,11 @@ QString LiveVulkan::lastUpError() const {
     return QString::fromStdString(upError_);
 }
 
+QString LiveVulkan::nvidiaVfgError() const {
+    std::lock_guard l(m_);
+    return QString::fromStdString(nvidiaVfgError_);
+}
+
 QString LiveVulkan::lastError() const {
     std::lock_guard l(m_);
     return QString::fromStdString(error_);
@@ -115,6 +122,12 @@ void LiveVulkan::setDisplayFit(QSize px) {
 void LiveVulkan::setSettings(const EnhanceSettings& s) {
     {
         std::lock_guard l(m_);
+        if (s.nvidiaFg() != settings_.nvidiaFg() || (s.nvidiaFg() &&
+                (s.nvidiaQuality != settings_.nvidiaQuality || s.nvidiaAutoRegulate != settings_.nvidiaAutoRegulate))) {
+            resetNvidiaStats();
+            resetFg_ = true;
+        }
+        if (!s.nvidiaFg() || !settings_.nvidiaFg()) { nvidiaVfgActive_ = false; nvidiaVfgError_.clear(); }
         settings_ = s;
         redraw_ = true;           // re-run the chain on the current frame (matters while paused)
     }
@@ -127,6 +140,10 @@ void LiveVulkan::setActive(bool on) {
     if (!on) {
         std::lock_guard l(m_);
         hasNew_ = haveCurrent_ = redraw_ = false;
+        nvidiaVfgActive_ = false; nvidiaVfgError_.clear(); resetFg_ = true;
+        lastArrival_ = {};
+        frameMs_ = 1000.0 / 60.0;
+        resetNvidiaStats();
     }
     QMetaObject::invokeMethod(win_, "update", Qt::QueuedConnection);
 }
@@ -144,38 +161,89 @@ void LiveVulkan::submit(RawFrame& frame) {
     QMetaObject::invokeMethod(win_, "update", Qt::QueuedConnection);
 }
 
+void LiveVulkan::scheduleRealUpdate(bool nvidia) {
+    if (realUpdateScheduled_.exchange(true)) return;
+    const auto deadline = realDue_;
+    const auto left = deadline - Clock::now();
+    const int fsrTimerMs = std::max(1, int(std::chrono::duration_cast<std::chrono::milliseconds>(left).count()) - 1);
+    QMetaObject::invokeMethod(this, [this, deadline, nvidia, fsrTimerMs] {
+        int ms = fsrTimerMs;
+        if (nvidia) {
+            const QScreen* screen = win_->screen();
+            const double hz = screen ? screen->refreshRate() : 0;
+            if (hz >= 20 && hz <= 1000) displayPeriodUs_ = int(std::lround(1e6 / hz));
+            // The GUI may have been waiting on the render thread. Use the
+            // absolute deadline; request the next refresh one display period
+            // in advance. The render thread selects the nearest eligible tick.
+            const double leftMs = std::chrono::duration<double, std::milli>(deadline - Clock::now()).count();
+            ms = std::max(0, int(std::floor(leftMs - displayPeriodUs_.load() / 1000.0)));
+        }
+        auto update = [this] {
+            realUpdateScheduled_ = false;
+            if (active_.load()) win_->update();
+        };
+        if (ms > 0) QTimer::singleShot(ms, Qt::PreciseTimer, this, update);
+        else update();
+    }, Qt::QueuedConnection);
+}
+
+bool LiveVulkan::showPendingReal() {
+    win_->beginExternalCommands();
+    auto* rif = win_->rendererInterface();
+    auto* cb = static_cast<VkCommandBuffer*>(rif->getResource(win_, QSGRendererInterface::CommandListResource));
+    const bool recorded = cb && *cb;
+    if (recorded) chain_->recordShowReal(*cb);
+    win_->endExternalCommands();
+    if (recorded) noteShown();
+    return recorded;
+}
+
 void LiveVulkan::onBeforeRendering() {
     if (!active_.load()) return;
     bool fresh = false;
     EnhanceSettings s;
+    Clock::time_point arrival{};
+    uint64_t nvidiaEpoch = 0;
     {
-        std::lock_guard l(m_);
+        std::unique_lock l(m_);
         s = settings_;
+        nvidiaEpoch = nvidiaEpoch_;
+        // A timer and the next captured picture can reach Qt in the same refresh. Keep
+        // that input in the mailbox until its predecessor's real frame has been presented.
+        if (s.nvidiaFg() && !resetFg_.load() && !(hasNew_ && mailbox_.reset) && chain_->fgShowRealPending()) {
+            const bool redrawAfterReal = hasNew_ || redraw_;
+            l.unlock();
+            const auto tolerance = std::chrono::microseconds(displayPeriodUs_.load() / 2);
+            if (Clock::now() < realDue_ - tolerance || !showPendingReal()) scheduleRealUpdate(true);
+            else {
+                noteNvidiaPublication(nvidiaEpoch, false);
+                if (redrawAfterReal) QMetaObject::invokeMethod(win_, "update", Qt::QueuedConnection);
+            }
+            return;
+        }
         if (hasNew_) {
             std::swap(current_, mailbox_);
             hasNew_ = false;
             haveCurrent_ = true;
             redraw_ = false;
             fresh = true;
+            arrival = lastArrival_;
         } else if (redraw_ && haveCurrent_) {
             redraw_ = false;
             fresh = true;
+            if (s.nvidiaFg()) resetFg_ = true;   // settings redraw, not a new temporal input
         }
     }
     if (!fresh) {
         // FSR frame generation: the generated frame is on screen; the real one follows half a frame later
         if (chain_->fgShowRealPending() && std::chrono::steady_clock::now() >= realDue_ - std::chrono::microseconds(1500)) {
-            win_->beginExternalCommands();
-            auto* rif = win_->rendererInterface();
-            auto* cb = static_cast<VkCommandBuffer*>(rif->getResource(win_, QSGRendererInterface::CommandListResource));
-            if (cb && *cb) chain_->recordShowReal(*cb);
-            win_->endExternalCommands();
-            noteShown();
+            showPendingReal();
         }
         return;
     }
 
     const auto t0 = std::chrono::steady_clock::now();
+    if (resetFg_.exchange(false) || current_.reset) chain_->resetFgHistory();
     if (current_.reset) { chain_->resetHistory(); current_.reset = false; }   // a video file was seeked
     LiveInput in;
     switch (current_.fmt) {
@@ -196,12 +264,19 @@ void LiveVulkan::onBeforeRendering() {
     std::string err;
     double frameMs;
     { std::lock_guard l(m_); frameMs = frameMs_; }
+    if (s.nvidiaFg() && s.nvidiaAutoRegulate && arrival != Clock::time_point{}) {
+        // The generated picture owns the first half of the input period; the real
+        // one follows it. Anchor the budget to the input's arrival, before Qt's
+        // render callback, so an already delayed pair cannot start a fresh budget.
+        in.generatedDue = arrival + std::chrono::microseconds(int(std::clamp(frameMs * 500.0, 3000.0, 30000.0)));
+    }
     s.fitW = fitW_.load(); s.fitH = fitH_.load();   // the window's pixel size for the picture (VideoItem)
     bool ok = cb && *cb && chain_->recordLive(*cb, win_->graphicsStateInfo().currentFrameSlot, in, s, err, float(frameMs));
     win_->endExternalCommands();
     if (!ok) {
         std::lock_guard l(m_);
         error_ = err.empty() ? "Live path unavailable" : err;
+        if (s.nvidiaFg() && settings_.nvidiaFg()) { nvidiaVfgError_ = error_; nvidiaVfgActive_ = false; }
         static int warned = 0;
         if (warned++ < 3) qWarning() << "LiveVulkan: record failed:" << QString::fromStdString(error_);
         return;
@@ -209,7 +284,12 @@ void LiveVulkan::onBeforeRendering() {
     {
         std::lock_guard l(m_);
         error_.clear();
-        upError_ = chain_->fgError().empty() ? chain_->upError() : "Frame generation: " + chain_->fgError();
+        if (s.nvidiaFg() && settings_.nvidiaFg() && nvidiaEpoch == nvidiaEpoch_) {
+            nvidiaVfgError_ = chain_->fgError();
+            nvidiaVfgActive_ = chain_->fgShowRealPending();
+            nvidiaStats_.models = chain_->nvidiaModelStats();
+        }
+        upError_ = (s.nvidiaFg() || chain_->fgError().empty()) ? chain_->upError() : "Frame generation: " + chain_->fgError();
     }
     const ImageRes& real = chain_->liveDisplay();
     const auto tEnd = std::chrono::steady_clock::now();
@@ -224,7 +304,9 @@ void LiveVulkan::onBeforeRendering() {
     if (current_.captured.time_since_epoch().count()) {
         const double q = std::chrono::duration<double, std::milli>(tEnd - current_.captured).count();
         if (q >= 0 && q < 1000) {
-            const double g = std::max(0.0f, chain_->gpuMs());
+            // NVIDIA submits GPU work asynchronously across two APIs. The Vulkan timer
+            // covers only some stages; for this mode report capture-to-app-publication.
+            const double g = s.nvidiaFg() ? 0 : std::max(0.0f, chain_->gpuMs());
             const double v = q + g, o = pipeMs_.load();
             pipeMs_ = o <= 0 ? v : o + 0.1 * (v - o);
         }
@@ -242,14 +324,61 @@ void LiveVulkan::onBeforeRendering() {
                                      chain_->upError().empty() ? "" : ", upscaling error: ", chain_->upError().c_str());
     }
     publish(realHandle, int(real.width), int(real.height), recreated);
+    if (s.nvidiaFg()) noteNvidiaPublication(nvidiaEpoch, chain_->fgShowRealPending(), lastMs_.load());
     if (chain_->fgShowRealPending()) {
         // show the real frame half a capture interval after the generated one
         const int halfUs = int(std::clamp(frameMs * 500.0, 3000.0, 30000.0));
         realDue_ = tEnd + std::chrono::microseconds(halfUs);
-        QMetaObject::invokeMethod(win_, [w = win_, ms = std::max(1, halfUs / 1000 - 1)] {
-            QTimer::singleShot(ms, Qt::PreciseTimer, w, [w] { w->update(); });
-        }, Qt::QueuedConnection);
+        if (s.nvidiaFg() && arrival != Clock::time_point{}) {
+            // A slow generation or late Qt callback can consume much of a source
+            // period. Do not hold this real picture past the next source deadline:
+            // its successor must still be able to reach the renderer on time.
+            const auto nextInput = arrival + std::chrono::microseconds(2 * halfUs);
+            realDue_ = std::min(realDue_, std::max(tEnd, nextInput));
+        }
+        scheduleRealUpdate(s.nvidiaFg());
     }
+}
+
+void LiveVulkan::resetNvidiaStats() {
+    ++nvidiaEpoch_;
+    nvidiaStarted_ = {};
+    nvidiaStats_ = {};
+    nvidiaRecent_.clear();
+}
+
+void LiveVulkan::noteNvidiaPublication(uint64_t epoch, bool generated, double processingMs) {
+    const auto now = Clock::now();
+    std::lock_guard l(m_);
+    if (epoch != nvidiaEpoch_) return;  // a source or mode was changed during rendering
+    if (nvidiaStarted_ == Clock::time_point{}) nvidiaStarted_ = now;
+    if (generated) ++nvidiaStats_.generated;
+    else ++nvidiaStats_.real;
+    if (processingMs >= 0) {
+        auto& average = nvidiaStats_.processingMs;
+        average = average > 0 ? average + 0.1 * (processingMs - average) : processingMs;
+    }
+    while (!nvidiaRecent_.empty() && now - nvidiaRecent_.front().time >= std::chrono::seconds(2))
+        nvidiaRecent_.pop_front();
+    nvidiaRecent_.push_back({now, generated});
+}
+
+LiveVulkan::NvidiaFrameStats LiveVulkan::nvidiaFrameStats() const {
+    std::lock_guard l(m_);
+    auto result = nvidiaStats_;
+    if (nvidiaRecent_.empty()) return result;
+    const auto now = Clock::now();
+    const auto start = std::max(now - std::chrono::seconds(2), nvidiaStarted_);
+    const auto seconds = std::chrono::duration<double>(now - start).count();
+    if (seconds < 0.25) return result;
+    for (const auto& frame : nvidiaRecent_) {
+        if (frame.time <= start) continue;
+        if (frame.generated) ++result.generatedFps;
+        else ++result.realFps;
+    }
+    result.realFps /= seconds;
+    result.generatedFps /= seconds;
+    return result;
 }
 
 void LiveVulkan::noteShown() {

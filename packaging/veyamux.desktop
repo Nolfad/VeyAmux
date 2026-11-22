@@ -1,9 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=VeyAmux
+Name=VeyAmux NVIDIA Test
 GenericName=Capture-card viewer and video player
-Comment=Low-latency capture-card viewer and video player with GPU enhancement and Lossless Scaling frame generation
-Comment[da]=Capture-kort-viewer og videoafspiller med lav forsinkelse, GPU-forbedring og frame generation via Lossless Scaling
+Comment=Capture-card viewer with DLSS Super Resolution and experimental NVIDIA Video Frame Generation
 Keywords=capture;capture card;video;player;upscaling;HDR;frame generation;lossless scaling;
 Exec=veyamux %F
 Icon=veyamux

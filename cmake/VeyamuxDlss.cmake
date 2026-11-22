@@ -1,0 +1,17 @@
+# The public NVIDIA DLSS SDK's headers and link stub are build inputs. Only the
+# release Super Resolution feature is installed; development/debug runtimes are excluded.
+set(VEYAMUX_DLSS_SDK "${CMAKE_SOURCE_DIR}/.tools/dlss" CACHE PATH "NVIDIA DLSS SDK checkout (scripts/fetch-dlss.sh)")
+option(VEYAMUX_ENABLE_DLSS "Build the native NVIDIA NGX Vulkan Super Resolution backend" ON)
+target_sources(veyamux_core PRIVATE src/DlssUpscaler.cpp)
+if(VEYAMUX_ENABLE_DLSS)
+    set(_ngx_stub "${VEYAMUX_DLSS_SDK}/lib/Linux_x86_64/libnvsdk_ngx.a")
+    set(_ngx_runtime "${VEYAMUX_DLSS_SDK}/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.16")
+    if(NOT EXISTS "${_ngx_stub}" OR NOT EXISTS "${_ngx_runtime}")
+        message(FATAL_ERROR "NVIDIA NGX SR SDK missing. Run scripts/fetch-dlss.sh, or configure -DVEYAMUX_ENABLE_DLSS=OFF.")
+    endif()
+    target_compile_definitions(veyamux_core PRIVATE VEYAMUX_HAS_DLSS=1)
+    target_include_directories(veyamux_core SYSTEM PRIVATE "${VEYAMUX_DLSS_SDK}/include")
+    target_link_libraries(veyamux_core PUBLIC "${_ngx_stub}" ${CMAKE_DL_LIBS})
+    install(FILES "${_ngx_runtime}" DESTINATION lib/veyamux/ngx RENAME libnvidia-ngx-dlss.so)
+    install(FILES "${VEYAMUX_DLSS_SDK}/LICENSE.txt" DESTINATION share/veyamux/licenses RENAME NVIDIA-DLSS-LICENSE.txt)
+endif()

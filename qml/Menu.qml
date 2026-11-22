@@ -29,7 +29,7 @@ Rectangle {
         { key: "tabRecord", icon: "icons/record.svg" },
         { key: "tabSystem", icon: "icons/system.svg" }
     ]
-    readonly property var scales: [1.0, 1.5, 2.0, 3.0]
+    readonly property var scales: [1.0, 4 / 3, 1.5, 2.0, 3.0]
 
     readonly property real designW: 600
     readonly property real contentScale: compact ? Math.max(0.9, Math.min(1.35, (width - 40) / designW))
@@ -89,7 +89,7 @@ Rectangle {
         Row {
             width: parent.width
             Text { font.family: Theme.font; text: p.label; color: Theme.label; font.pixelSize: 16; width: parent.width - 60 }
-            Text { font.family: Theme.font; text: p.value.toFixed(p.decimals); color: Theme.text; font.pixelSize: 16; width: 60; horizontalAlignment: Text.AlignRight }
+            Text { font.family: Theme.font; text: player.language === "pt-BR" ? p.value.toLocaleString(Qt.locale("pt_BR"), 'f', p.decimals) : p.value.toFixed(p.decimals); color: Theme.text; font.pixelSize: 16; width: 60; horizontalAlignment: Text.AlignRight }
         }
         VSlider { width: parent.width; from: p.from; to: p.to; value: p.value; neutral: p.neutral; onMoved: (v) => p.moved(v) }
     }
@@ -173,22 +173,23 @@ Rectangle {
                         Label_ { text: tr("upscale") }
                         Segmented {
                             width: parent.width; enabled: player.enhance
-                            model: [tr("native"), "1.5×", "2×", "3×"]
-                            current: { var i = menu.scales.indexOf(Math.round(player.scale * 10) / 10); return i < 0 ? 0 : i }
+                            model: [tr("native"), "1⅓×", tr("scaleOneAndHalf"), "2×", "3×"]
+                            current: { var i = menu.scales.findIndex(function (scale) { return Math.abs(scale - player.scale) < 0.001 }); return i < 0 ? 0 : i }
                             onPicked: (i) => player.scale = menu.scales[i]
                         }
                         Label_ { text: tr("method") }
                         Segmented {
                             width: parent.width; enabled: player.enhance
-                            readonly property var values: [0, 2, 1, 3]   // SGSR | FSR 1 | FSR 3.1 | NIS
-                            model: ["SGSR", "FSR 1", "FSR 3.1", "NIS"]
+                            readonly property var values: [0, 2, 1, 3, 4]
+                            model: ["SGSR", "FSR 1", "FSR 3.1", "NIS", "DLSS SR"]
                             current: Math.max(0, values.indexOf(player.upscaler))
                             onPicked: (i) => player.upscaler = values[i]
                         }
                         Hint {
                             color: player.upscalerError !== "" ? Theme.warn : Theme.muted
-                            text: player.upscalerError !== "" ? tr("fsrFallback") + player.upscalerError
-                                  : (player.upscaler === 1 ? (player.scale <= 1.001 ? tr("fsrNativeAaHint") : tr("fsr31Hint"))
+                            text: player.upscalerError !== "" ? (player.upscaler === 4 ? tr("dlssFallback") : tr("fsrFallback")) + player.upscalerError
+                                  : (player.upscaler === 4 ? tr("dlssHint")
+                                     : player.upscaler === 1 ? (player.scale <= 1.001 ? tr("fsrNativeAaHint") : tr("fsr31Hint"))
                                      : player.upscaler === 2 ? tr("fsr1Hint") + (player.scale <= 1.001 ? " " + tr("fsrNeedsScale") : "")
                                      : player.upscaler === 3 ? tr("nisHint") + (player.scale <= 1.001 ? " " + tr("fsrNeedsScale") : "")
                                                              : tr("sgsrHint"))
@@ -320,7 +321,7 @@ Rectangle {
                         Segmented { visible: player.hdrOutput; width: parent.width; model: ["HDR10", "scRGB"]; current: player.hdrMode; onPicked: (i) => player.hdrMode = i }
                         Segmented {
                             visible: player.hdrOutput; width: parent.width
-                            model: ["Auto", "400", "600", "1000", "1500 nits"]
+                            model: [tr("autoBrightness"), "400", "600", "1000", "1500 nits"]
                             readonly property var peaks: [0, 400, 600, 1000, 1500]
                             current: Math.max(0, peaks.indexOf(player.displayPeak)); onPicked: (i) => player.displayPeak = peaks[i]
                         }
@@ -338,7 +339,7 @@ Rectangle {
                     Sep {}
                     Column {
                         width: parent.width; spacing: 10
-                        SwitchRow { text: "Retro TV"; checked: player.retroTv; onToggled: (v) => player.retroTv = v }
+                        SwitchRow { text: tr("retroTvTitle"); checked: player.retroTv; onToggled: (v) => player.retroTv = v }
                         Hint { text: tr("retroHint") }
                         Label_ { visible: player.retroTv; text: tr("retroLines") }
                         Segmented {
@@ -477,6 +478,8 @@ Rectangle {
                     Sep {}
                     // ---- updates
                     Column {
+                        readonly property bool localBuild: player.appVersion.includes("-nvidia")
+                        id: updatePanel
                         width: parent.width; spacing: 10
                         Title { text: tr("updTitle") }
                         Text { font.family: Theme.font; width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 15
@@ -484,7 +487,7 @@ Rectangle {
                             text: tr("updVersion").replace("%1", player.appVersion) + (player.updateText !== "" ? "\n" + player.updateText : "") }
                         Flow {
                             width: parent.width; spacing: 8
-                            Btn { visible: player.updateState !== "available" && player.updateState !== "ready" && player.updateState !== "downloading"
+                            Btn { enabled: !updatePanel.localBuild; visible: player.updateState !== "available" && player.updateState !== "ready" && player.updateState !== "downloading"
                                 text: tr("updCheck"); onClicked: player.checkForUpdate(true) }
                             Btn { visible: player.updateState === "available"; primary: true
                                 text: player.updateSelf ? tr("updInstall").replace("%1", player.updateVersion) : tr("updPage"); onClicked: player.installUpdate() }
@@ -492,8 +495,8 @@ Rectangle {
                             Btn { visible: player.updateState === "available" || player.updateState === "ready"; text: tr("updNotes"); onClicked: player.openReleasePage() }
                         }
                         Hint { visible: !player.updateSelf; text: tr("updNotSelf") }
-                        SwitchRow { text: tr("updAuto"); checked: player.autoUpdateCheck; onToggled: (v) => player.autoUpdateCheck = v }
-                        Hint { text: tr("updAutoHint") }
+                        SwitchRow { text: tr("updAuto"); active: !updatePanel.localBuild; checked: !updatePanel.localBuild && player.autoUpdateCheck; onToggled: (v) => player.autoUpdateCheck = v }
+                        Hint { text: updatePanel.localBuild ? tr("nvidiaLocalUpdate") : tr("updAutoHint") }
                     }
                     Sep {}
                     // ---- performance report

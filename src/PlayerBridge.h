@@ -26,6 +26,7 @@
 #include <QUrl>
 #include <QVariantList>
 #include <QPointer>
+#include <QProcess>
 #include <QWindow>
 #include <memory>
 
@@ -62,6 +63,14 @@ class PlayerBridge : public QObject {
     Q_PROPERTY(bool enhance READ enhance WRITE setEnhance NOTIFY enhanceChanged)
     Q_PROPERTY(double scale READ scale WRITE setScale NOTIFY enhanceChanged)
     Q_PROPERTY(int upscaler READ upscaler WRITE setUpscaler NOTIFY enhanceChanged)
+    Q_PROPERTY(bool nvidiaRuntimeInstalled READ nvidiaRuntimeInstalled NOTIFY nvidiaInstallChanged)
+    Q_PROPERTY(bool nvidiaInstalling READ nvidiaInstalling NOTIFY nvidiaInstallChanged)
+    Q_PROPERTY(QString nvidiaInstallStatus READ nvidiaInstallStatus NOTIFY nvidiaInstallChanged)
+    Q_PROPERTY(bool nvidiaVfgActive READ nvidiaVfgActive NOTIFY statsChanged)
+    Q_PROPERTY(int nvidiaQuality READ nvidiaQuality WRITE setNvidiaQuality NOTIFY enhanceChanged)
+    Q_PROPERTY(bool nvidiaAutoRegulate READ nvidiaAutoRegulate WRITE setNvidiaAutoRegulate NOTIFY enhanceChanged)
+    Q_PROPERTY(QString nvidiaRegulationStatus READ nvidiaRegulationStatus NOTIFY statsChanged)
+    Q_PROPERTY(QString nvidiaVfgError READ nvidiaVfgError NOTIFY statsChanged)
     Q_PROPERTY(QString upscalerError READ upscalerError NOTIFY statsChanged)
     // Frame generation: 0 off, 2 Lossless Scaling fixed 2x (default), 3 Lossless Scaling fixed 3x
     Q_PROPERTY(int frameGenMode READ frameGenMode WRITE setFrameGenMode NOTIFY enhanceChanged)
@@ -216,6 +225,22 @@ public:
     bool enhance() const { return s_.enabled; }
     double scale() const { return s_.scale; }
     int upscaler() const { return int(s_.upscaler); }
+    bool nvidiaRuntimeInstalled() const;
+    bool nvidiaInstalling() const { return nvidiaInstaller_ != nullptr; }
+    QString nvidiaInstallStatus() const { return translateMessage(nvidiaInstallStatus_); }
+    int nvidiaQuality() const { return s_.nvidiaQuality; }
+    bool nvidiaAutoRegulate() const { return s_.nvidiaAutoRegulate; }
+    void setNvidiaQuality(int level) { s_.nvidiaQuality = qBound(0, level, 2); QSettings().setValue("enh/nvidiaQuality", s_.nvidiaQuality); applyEnhance(); }
+    void setNvidiaAutoRegulate(bool value) { s_.nvidiaAutoRegulate = value; QSettings().setValue("enh/nvidiaAutoRegulate", value); applyEnhance(); }
+    QString nvidiaRegulationStatus() const;
+    QString nvidiaQualityName(int level) const;
+    Q_INVOKABLE void installNvidiaRuntime();
+    bool nvidiaVfgActive() const { return s_.frameGen == veyamux::FrameGenMode::NvidiaVfg && liveVulkanActive() && liveVk_->nvidiaVfgActive(); }
+    QString nvidiaVfgError() const {
+        if (!engine_.isOpen() || s_.frameGen != veyamux::FrameGenMode::NvidiaVfg) return {};
+        if (!liveVulkanActive()) return L("NVIDIA VFG requires live capture with the Vulkan renderer.");
+        return translateMessage(liveVk_->nvidiaVfgError());
+    }
     QString upscalerError() const { return upError_; }
     bool fxaa() const { return s_.fxaa; }
     bool deflicker() const { return s_.deflicker; }
@@ -525,6 +550,7 @@ public slots:
     void psPad(quint32 buttons, double lx, double ly, double rx, double ry, double l2, double r2);
 
 signals:
+    void nvidiaInstallChanged();
     void updateChanged();
     void psChanged();
     void psRumble(int low, int high);
@@ -638,6 +664,8 @@ private:
     void checkHighRate();   // 100 ms tick: pause/resume frame generation for ~120 Hz signals
     bool lsfgPerformance_ = false;
     double lastFlow_ = -1;
+    QPointer<QProcess> nvidiaInstaller_;
+    QString nvidiaInstallStatus_;
     QString upError_;
     bool vrrAtStart_ = false;
     int hdrMode_ = QSettings().value("enh/hdrMode", 0).toInt() == 1 ? 1 : 0, hdrModeAtStart_ = 0;
@@ -682,5 +710,5 @@ private:
     void updateOutputFps(uint64_t shownTotal);
     void updateLsfgMultiplier();
     // a text in the UI language: Danish inline, English as the key into i18n/messages.json for the others
-    QString L(const char* en, const char* da) const;
+    QString L(const char* en, const char* da = nullptr) const;
 };

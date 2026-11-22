@@ -117,8 +117,50 @@ Column {
         checked: player.hudLock; onToggled: (v) => player.hudLock = v
     }
 
+    Option { mode: 6; title: "NVIDIA VFG 2× 👑"; detail: tr("nvidiaVfgHint") }
+    Text {
+        visible: player.frameGenMode === 6
+        x: 34; font.family: Theme.font; color: Theme.label; font.pixelSize: 16
+        text: tr("vfgQuality")
+    }
+    Segmented {
+        visible: player.frameGenMode === 6
+        x: 34; width: parent.width - 34
+        model: tr("vfgLevels"); current: player.nvidiaQuality
+        onPicked: (level) => player.nvidiaQuality = level
+    }
+    SubToggle {
+        visible: player.frameGenMode === 6
+        title: tr("vfgRegulate"); detail: tr("vfgRegulateHint")
+        checked: player.nvidiaAutoRegulate; onToggled: (enabled) => player.nvidiaAutoRegulate = enabled
+    }
+    Text {
+        visible: player.frameGenMode === 6 && text.length > 0
+        x: 34; width: parent.width - 34; wrapMode: Text.Wrap; font.family: Theme.font
+        font.pixelSize: 15; color: Theme.muted; text: player.nvidiaRegulationStatus
+    }
+    Text {
+        visible: player.frameGenMode === 6 && player.nvidiaRuntimeInstalled
+        width: root.width; wrapMode: Text.Wrap; font.family: Theme.font; font.pixelSize: 15
+        color: player.nvidiaVfgError.length ? Theme.warn : Theme.muted
+        text: player.nvidiaVfgError || (player.nvidiaVfgActive ? tr("nvidiaVfgActive") : tr("nvidiaVfgWaiting"))
+    }
+    LinkButton {
+        visible: player.frameGenMode === 6 && !player.nvidiaRuntimeInstalled && !player.nvidiaInstalling
+        text: tr("installNvidiaVfg"); onClicked: player.installNvidiaRuntime()
+    }
+    Text {
+        visible: player.frameGenMode === 6 && player.nvidiaInstallStatus.length > 0
+        width: root.width; wrapMode: Text.Wrap; font.family: Theme.font; font.pixelSize: 15
+        color: Theme.text; text: player.nvidiaInstallStatus
+    }
+    LinkButton {
+        visible: player.frameGenMode === 6 && player.nvidiaRuntimeInstalled && player.nvidiaInstallStatus.length > 0
+        text: tr("restartNow"); onClicked: player.restartApp()
+    }
+
     Text { font.family: Theme.font;
-        visible: player.fgPaused && player.frameGenMode === 5   // lsfg-vk cannot pause (a notice says so)
+        visible: player.fgPaused && (player.frameGenMode === 5 || player.frameGenMode === 6)   // lsfg-vk cannot pause (a notice says so)
         width: root.width; wrapMode: Text.Wrap; lineHeight: 1.15; font.pixelSize: 15; color: Theme.accent3
         text: tr("fgPaused")
     }
@@ -132,6 +174,7 @@ Column {
 
     // Lossless Scaling status / actions
     Rectangle {
+        visible: player.frameGenMode !== 6
         width: root.width
         height: lsCol.implicitHeight + 16
         radius: 9 * Theme.round

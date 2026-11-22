@@ -1,4 +1,5 @@
 #include "LiveVulkan.h"
+#include "DlssUpscaler.h"
 #include "LosslessScaling.h"
 #include "PlayerBridge.h"
 #include "Gamepad.h"
@@ -92,6 +93,17 @@ static UiChoice chooseUi(const QStringList& args, bool probing) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && (std::strcmp(argv[1], "--test-vfg") == 0 || std::strcmp(argv[1], "--bench-vfg") == 0)) {
+        QCoreApplication cli(argc, argv);
+        QProcess probe;
+        probe.setProcessChannelMode(QProcess::ForwardedChannels);
+        probe.start(QCoreApplication::applicationDirPath() + "/veyamux-nvidia-vfg-probe", cli.arguments().mid(1));
+        if (!probe.waitForStarted() || !probe.waitForFinished(-1) || probe.exitStatus() != QProcess::NormalExit) {
+            qWarning("Unable to run NVIDIA VFG diagnostic: %s", qPrintable(probe.errorString()));
+            return 1;
+        }
+        return probe.exitCode();
+    }
     if (!qEnvironmentVariableIsSet("QSG_RENDER_LOOP")) qputenv("QSG_RENDER_LOOP", "threaded");
     // Grey (not sub-pixel/LCD) text antialiasing: sub-pixel text gets coloured fringes when the window is scaled by the
     // compositor, drawn through a layer (HDR output) or captured.
@@ -105,14 +117,8 @@ int main(int argc, char** argv) {
         qputenv("LIBVA_DRIVERS_PATH", "/usr/lib64/dri:/usr/lib/x86_64-linux-gnu/dri:/usr/lib/dri:/usr/lib/va");
 
     QCoreApplication::setOrganizationName("VeyAmux");
-    QCoreApplication::setApplicationName("VeyAmux");
-    QCoreApplication::setApplicationVersion("1.7");
-    // The program was called Veyra before: carry the old settings over once (the old folder is left untouched).
-    {
-        const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
-        const QString now = base + "/VeyAmux/VeyAmux.conf", before = base + "/Veyra/Veyra.conf";
-        if (!QFileInfo::exists(now) && QFileInfo::exists(before) && QDir().mkpath(base + "/VeyAmux")) QFile::copy(before, now);
-    }
+    QCoreApplication::setApplicationName("VeyAmuxNvidiaTest");
+    QCoreApplication::setApplicationVersion("1.7-nvidia-test2");
     // `--watch`: no window, only the capture-card watcher (started from ~/.config/autostart)
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--watch") == 0) {
@@ -125,12 +131,12 @@ int main(int argc, char** argv) {
     bool vrrAtStart = false;
     {
         QSettings q;
-        vrrAtStart = q.value("enh/vrr", false).toBool() && q.value("enh/frameGenMode", 2).toInt() == 0;
+        vrrAtStart = q.value("enh/vrr", false).toBool() && q.value("enh/frameGenMode", 6).toInt() == 0;
         if (qEnvironmentVariable("VEYAMUX_VSYNC") == "1" || vrrAtStart) qunsetenv("QSG_NO_VSYNC");
         else qputenv("QSG_NO_VSYNC", "1");
     }
     QApplication app(argc, argv);
-    QGuiApplication::setApplicationDisplayName("VeyAmux");
+    QGuiApplication::setApplicationDisplayName("VeyAmux NVIDIA Test");
     QGuiApplication::setDesktopFileName(QStringLiteral("veyamux"));
 
     QString openFile, grabPath, capturePath;
@@ -220,7 +226,7 @@ int main(int argc, char** argv) {
     bool lsfgEnabled = false, lsfgCrashed = false;
     if (!probing) {
         QSettings q;
-        const int fgMode = q.value("enh/frameGenMode", 2).toInt();   // default Lossless Scaling 2x; 1/4 (old in-app modes) = 2x
+        const int fgMode = q.value("enh/frameGenMode", 6).toInt();
         const bool wantLs = fgMode >= 1 && fgMode <= 4 && qEnvironmentVariable("VEYAMUX_LSFG") != "0";
         // Crash guard: if the previous start with lsfg-vk never reached the "running fine" mark, keep Lossless Scaling
         // off until the user presses "Try again" (otherwise a broken layer would make every start crash).
@@ -266,6 +272,11 @@ int main(int argc, char** argv) {
             qputenv("QSG_RHI_HDR", hdrMode == 1 ? "scrgb" : "hdr10");
         } else {
             hdrOutRequested = false;
+        }
+        for (const auto& name : veyamux::DlssUpscaler::extensions()) {
+            const QByteArray extension(name.c_str());
+            if (vkInst->supportedExtensions().contains(extension) && !exts.contains(extension))
+                exts << extension;
         }
         vkInst->setExtensions(exts);
         std::string err;

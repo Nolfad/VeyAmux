@@ -194,39 +194,49 @@ Window {
         Column {
             anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: 20 * startCol.k }
             spacing: 10 * startCol.k
-            Row {
+            Grid {
                 anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 8 * startCol.k
-                Repeater {
-                    model: Theme.names
-                    delegate: Rectangle {
-                        required property string modelData
-                        readonly property var pal: Theme.palettes[modelData]
-                        readonly property bool sel: Theme.name === modelData
-                        width: 112 * startCol.k; height: 36 * startCol.k; radius: 10 * Theme.round
-                        color: pal.surface
-                        border.width: sel ? 2 : 1
-                        border.color: sel ? pal.accent : (thMa.containsMouse ? pal.accentLine : Theme.border)
-                        Row { anchors.centerIn: parent; spacing: 6
-                            Image { source: "icons/logo-" + modelData + ".svg"; sourceSize: Qt.size(40, 40); width: 20 * startCol.k; height: width; anchors.verticalCenter: parent.verticalCenter }
-                            Text { font.family: Theme.font; text: pal.title; color: pal.text; font.pixelSize: 13 * startCol.k; font.weight: sel ? Font.DemiBold : Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
-                        MouseArea { id: thMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: player.theme = modelData }
+                columns: themeChoices.implicitWidth + languageChoices.implicitWidth + columnSpacing <= startCol.width - 24 ? 2 : 1
+                horizontalItemAlignment: Grid.AlignHCenter
+                columnSpacing: 26 * startCol.k
+                rowSpacing: 6 * startCol.k
+                Row {
+                    id: themeChoices
+                    spacing: 8 * startCol.k
+                    Repeater {
+                        model: Theme.names
+                        delegate: Rectangle {
+                            required property string modelData
+                            readonly property var pal: Theme.palettes[modelData]
+                            readonly property bool sel: Theme.name === modelData
+                            width: 112 * startCol.k; height: 36 * startCol.k; radius: 10 * Theme.round
+                            color: pal.surface
+                            border.width: sel ? 2 : 1
+                            border.color: sel ? pal.accent : (thMa.containsMouse ? pal.accentLine : Theme.border)
+                            Row { anchors.centerIn: parent; spacing: 6
+                                Image { source: "icons/logo-" + modelData + ".svg"; sourceSize: Qt.size(40, 40); width: 20 * startCol.k; height: width; anchors.verticalCenter: parent.verticalCenter }
+                                Text { font.family: Theme.font; text: pal.title; color: pal.text; font.pixelSize: 13 * startCol.k; font.weight: sel ? Font.DemiBold : Font.Medium; anchors.verticalCenter: parent.verticalCenter } }
+                            MouseArea { id: thMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: player.theme = modelData }
+                        }
                     }
                 }
-                Item { width: 10 * startCol.k; height: 1 }
-                Repeater {
-                    model: ["auto"].concat(S.languages)
-                    delegate: Rectangle {
-                        required property string modelData
-                        readonly property bool sel: player.languageChoice === modelData
-                        width: lgText.implicitWidth + 18 * startCol.k; height: 36 * startCol.k; radius: height / 2 * Theme.round
-                        color: sel ? Theme.accent : (lgMa.containsMouse ? Theme.surfaceHover : Theme.surface)
-                        gradient: sel ? Theme.sunset : null
-                        border.width: Theme.edge; border.color: "#000000"
-                        Text { id: lgText; font.family: Theme.font; anchors.centerIn: parent; font.pixelSize: 13 * startCol.k
-                            text: modelData === "auto" ? t("langAuto") : modelData.toUpperCase()
-                            color: parent.sel ? Theme.accentInk : Theme.text; font.weight: parent.sel ? Font.DemiBold : Font.Normal }
-                        MouseArea { id: lgMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: player.languageChoice = modelData }
+                Row {
+                    id: languageChoices
+                    spacing: 8 * startCol.k
+                    Repeater {
+                        model: ["auto"].concat(S.languages)
+                        delegate: Rectangle {
+                            required property string modelData
+                            readonly property bool sel: player.languageChoice === modelData
+                            width: lgText.implicitWidth + 18 * startCol.k; height: 36 * startCol.k; radius: height / 2 * Theme.round
+                            color: sel ? Theme.accent : (lgMa.containsMouse ? Theme.surfaceHover : Theme.surface)
+                            gradient: sel ? Theme.sunset : null
+                            border.width: Theme.edge; border.color: "#000000"
+                            Text { id: lgText; font.family: Theme.font; anchors.centerIn: parent; font.pixelSize: 13 * startCol.k
+                                text: modelData === "auto" ? t("langAuto") : modelData.toUpperCase()
+                                color: parent.sel ? Theme.accentInk : Theme.text; font.weight: parent.sel ? Font.DemiBold : Font.Normal }
+                            MouseArea { id: lgMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: player.languageChoice = modelData }
+                        }
                     }
                 }
             }
@@ -338,7 +348,7 @@ Window {
         Rectangle { width: 10; height: 10; radius: 5 * Theme.round; color: "#ff4040"; anchors.verticalCenter: parent.verticalCenter
             SequentialAnimation on opacity { running: player.recording || player.streaming; loops: Animation.Infinite
                 NumberAnimation { to: 0.3; duration: 700 } NumberAnimation { to: 1; duration: 700 } } }
-        Text { font.family: Theme.font; text: player.streaming ? (player.recording ? "LIVE · REC" : "LIVE") : "REC"; color: "#ffdddd"; font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 1 }
+        Text { font.family: Theme.font; text: player.streaming ? (player.recording ? t("liveRecordingBadge") : t("live")) : t("recordingBadge"); color: "#ffdddd"; font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 1 }
     }
 
     // ------------------------------------------------------------- title (top)

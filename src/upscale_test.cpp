@@ -1,4 +1,4 @@
-// Upscaling check: veyamux-upscale-test <shaderDir> <in.rgba> <w> <h> <frames> <out.rgba> <sgsr|fsr|fsr1|nis|crt|crt480|crt0|pp|ppWxH> [scale] [motionSign]
+// Upscaling check: veyamux-upscale-test <shaderDir> <in.rgba> <w> <h> <frames> <out.rgba> <sgsr|fsr|fsr1|nis|dlss|crt|crt480|crt0|pp|ppWxH> [scale] [motionSign]
 // Runs the full enhancement chain (EnhanceChain::process) frame by frame and writes every upscaled frame.
 #include "EnhanceChain.h"
 #include <chrono>
@@ -8,7 +8,7 @@
 #include <vector>
 using namespace veyamux;
 int main(int argc, char** argv) {
-    if (argc < 8) { std::fprintf(stderr, "usage: %s <shaderDir> <in.rgba> <w> <h> <frames> <out.rgba> <sgsr|fsr|fsr1|nis|crt|crt480|crt0|pp|ppWxH> [scale] [sign]\n", argv[0]); return 2; }
+    if (argc < 8) { std::fprintf(stderr, "usage: %s <shaderDir> <in.rgba> <w> <h> <frames> <out.rgba> <sgsr|fsr|fsr1|nis|dlss|crt|crt480|crt0|pp|ppWxH> [scale] [sign]\n", argv[0]); return 2; }
     const int W = atoi(argv[3]), H = atoi(argv[4]), N = atoi(argv[5]);
     const bool fsr = std::strcmp(argv[7], "fsr") == 0;
     if (argc > 9) setenv("VEYAMUX_FSR_UP_SIGN", argv[9], 1);   // read when the upscaler is created
@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
     EnhanceSettings s;
     s.scale = argc > 8 ? float(atof(argv[8])) : 2.0f;
     s.upscaler = fsr ? Upscaler::AmdFsr3 : (std::strcmp(argv[7], "fsr1") == 0 ? Upscaler::AmdFsr1 : std::strcmp(argv[7], "nis") == 0 ? Upscaler::Nis : Upscaler::Sgsr);
+    if (std::strcmp(argv[7], "dlss") == 0) s.upscaler = Upscaler::NvidiaDlss;
     // "crt" / "crt480" / "crt0": Retro TV (CRT-Geom) with 240 / 480 / source lines
     if (std::strncmp(argv[7], "crt", 3) == 0) { s.retroTv = true; s.retroLines = argv[7][3] ? std::atoi(argv[7] + 3) : 240; }
     // "pp" = pixel-perfect at the signal's pixels, "pp320x240" = back to that measured grid

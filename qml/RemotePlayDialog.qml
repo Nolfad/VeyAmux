@@ -81,7 +81,7 @@ Item {
                 width: parent.width
                 spacing: 10
                 Text { font.family: Theme.headFont; width: parent.width; elide: Text.ElideRight; font.capitalization: Theme.headCaps ? Font.AllUppercase : Font.MixedCase
-                    text: "PlayStation Remote Play"; color: Theme.heading; font.pixelSize: 20 * Theme.headScale; font.weight: Font.DemiBold }
+                    text: tr("remotePlayTitle"); color: Theme.heading; font.pixelSize: 20 * Theme.headScale; font.weight: Font.DemiBold }
                 Hint { text: tr("psIntro") }
 
                 // ---- account

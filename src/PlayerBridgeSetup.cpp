@@ -157,54 +157,75 @@ void PlayerBridge::applySetupFix(const QString& id) {
 // Text for a bug report: what VeyAmux ran on, with which settings, and what it measured.
 QString PlayerBridge::perfReport() {
     QStringList r;
-    r << "VeyAmux " + QCoreApplication::applicationVersion() + " performance report";
-    r << "System: " + QSysInfo::prettyProductName() + " · kernel " + QSysInfo::kernelVersion() + " · " +
+    r << L("VeyAmux %1 performance report").arg(QCoreApplication::applicationVersion());
+    r << L("System: ") + QSysInfo::prettyProductName() + " · kernel " + QSysInfo::kernelVersion() + " · " +
              qEnvironmentVariable("XDG_CURRENT_DESKTOP", "?") + " (" + qEnvironmentVariable("XDG_SESSION_TYPE", "?") + ")";
-    r << "Graphics card: " + (gpuDevice_.isEmpty() ? gpuName_ : gpuDevice_);
+    r << L("Graphics card: ") + (gpuDevice_.isEmpty() ? gpuName_ : gpuDevice_);
     const QScreen* sc = window_ && window_->screen() ? window_->screen() : QGuiApplication::primaryScreen();
-    if (sc) r << QString("Screen: %1x%2 @ %3 Hz, VRR %4%5").arg(int(sc->size().width() * sc->devicePixelRatio()))
+    if (sc) r << L("Screen: %1x%2 @ %3 Hz, VRR %4%5").arg(int(sc->size().width() * sc->devicePixelRatio()))
                      .arg(int(sc->size().height() * sc->devicePixelRatio())).arg(sc->refreshRate(), 0, 'f', 2)
-                     .arg(desktopVrr_ ? "on" : "off").arg(window_ && window_->visibility() == QWindow::FullScreen ? ", fullscreen" : "");
+                     .arg(desktopVrr_ ? L("on") : L("off")).arg(window_ && window_->visibility() == QWindow::FullScreen ? L(", fullscreen") : "");
     const bool live = engine_.isOpen() && engine_.isLive();
     if (engine_.isOpen()) {
         const auto& i = engine_.info();
-        QString src = live ? (curMode_.fourcc ? "capture card" : demoActive_ ? "demo" : "live") : "video file";
-        r << QString("Source: %1, %2x%3 %4 @ %5 fps").arg(src).arg(i.width).arg(i.height).arg(QString::fromStdString(i.videoCodec)).arg(i.fps, 0, 'f', 2);
+        QString src = live ? (curMode_.fourcc ? L("capture card") : demoActive_ ? L("demo") : L("live")) : L("video file");
+        r << L("Source: %1, %2x%3 %4 @ %5 fps").arg(src).arg(i.width).arg(i.height).arg(QString::fromStdString(i.videoCodec)).arg(i.fps, 0, 'f', 2);
         if (live) {
             const auto c = engine_.liveContent();
-            r << QString("Measured: game %1 fps%2, estimated %3")
-                     .arg(c.contentFps, 0, 'f', 1).arg(c.staticPicture ? " (still picture)" : "")
-                     .arg(c.estW > 0 ? QString("%1x%2").arg(c.estW).arg(c.estH) : QString("unknown"));
+            r << L("Measured: game %1 fps%2, estimated %3")
+                     .arg(c.contentFps, 0, 'f', 1).arg(c.staticPicture ? L(" (still picture)") : "")
+                     .arg(c.estW > 0 ? QString("%1x%2").arg(c.estW).arg(c.estH) : L("unknown"));
         }
     } else {
-        r << "Source: none";
+        r << L("Source: none");
     }
-    static const char* ups[] = {"SGSR", "FSR 3.1", "FSR 1", "NIS"};
-    static const char* nr[] = {"off", "spatial", "temporal", "both"};
-    r << QString("Picture: enhance %1, %2 %3x, noise reduction %4/%5, AA %6, anti-flicker %7, sharpen %8, texture %9 clarity %10 dehaze %11")
-             .arg(s_.enabled ? "on" : "off").arg(ups[std::clamp(int(s_.upscaler), 0, 3)]).arg(double(s_.scale))
+    static const char* ups[] = {"SGSR", "FSR 3.1", "FSR 1", "NIS", "DLSS SR"};
+    const QString nr[] = {L("off"), L("spatial"), L("temporal"), L("both")};
+    r << L("Picture: enhance %1, %2 %3x, noise reduction %4/%5, AA %6, anti-flicker %7, sharpen %8, texture %9 clarity %10 dehaze %11")
+             .arg(s_.enabled ? L("on") : L("off")).arg(ups[std::clamp(int(s_.upscaler), 0, 4)]).arg(double(s_.scale))
              .arg(nr[std::clamp(int(s_.denoise), 0, 3)]).arg(s_.denoiseStrength)
-             .arg(s_.fxaa ? (s_.smaa ? "SMAA" : "FXAA") + QString(" q%1").arg(s_.fxaaQuality) : QString("off"))
-             .arg(s_.deflicker ? "on" : "off").arg(double(s_.sharpen), 0, 'f', 2)
+             .arg(s_.fxaa ? (s_.smaa ? "SMAA" : "FXAA") + QString(" q%1").arg(s_.fxaaQuality) : L("off"))
+             .arg(s_.deflicker ? L("on") : L("off")).arg(double(s_.sharpen), 0, 'f', 2)
              .arg(double(s_.texture), 0, 'f', 2).arg(double(s_.clarity), 0, 'f', 2).arg(double(s_.dehaze), 0, 'f', 2);
-    QString fg = "off";
+    QString fg = L("off");
     if (s_.lsfgFg()) fg = QString("Lossless Scaling %1x (lsfg-vk %2, %3)").arg(s_.frameGen == veyamux::FrameGenMode::LsfgFixed3 ? 3 : 2)
-                              .arg(lsfg_.layerV2 ? "2" : lsfg_.layerManifest.isEmpty() ? "missing" : "1").arg(lsfgState());
+                              .arg(lsfg_.layerV2 ? "2" : lsfg_.layerManifest.isEmpty() ? "missing" : "1").arg(translateMessage(lsfgState()));
     else if (s_.frameGen == veyamux::FrameGenMode::FsrFree) fg = "AMD FSR 3.1.6 2x";
-    if (s_.vrr) fg += ", VRR mode";
-    r << "Frame generation: " + fg + QString(", pacing repair %1, HUD lock %2").arg(s_.pacingRepair ? "on" : "off").arg(s_.hudLock ? "on" : "off");
-    r << "HDR: capture peak " + QString::number(int(s_.hdrPeak)) + " nits, output " + (hdrOutputActive() ? "on" : "off");
+    else if (s_.frameGen == veyamux::FrameGenMode::NvidiaVfg)
+        fg = nvidiaVfgActive() ? L("NVIDIA VFG 2x (active)") : L("NVIDIA VFG 2x (inactive) ") + nvidiaVfgError();
+    if (!upError_.isEmpty()) r << L("Upscaler status: ") + upError_;
+    if (s_.vrr) fg += L(", VRR mode");
+    r << L("Frame generation: ") + fg + L(", pacing repair %1, HUD lock %2").arg(s_.pacingRepair ? L("on") : L("off")).arg(s_.hudLock ? L("on") : L("off"));
+    if (s_.frameGen == veyamux::FrameGenMode::NvidiaVfg && liveVulkanActive()) {
+        const auto n = liveVk_->nvidiaFrameStats();
+        const auto& m = n.models;
+        r << L("VFG quality: %1. Automatic regulation: %2.")
+                .arg(nvidiaQualityName(nvidiaQuality()), nvidiaAutoRegulate() ? L("On") : L("Off"));
+        r << L("Faster model ready: %1. Pairs using primary / faster: %2 / %3.")
+                .arg(m.fastReady ? L("Yes") : L("No")).arg(m.primaryPairs).arg(m.fastPairs);
+        if (!m.fastStatus.empty()) r << translateMessage(QString::fromStdString(m.fastStatus));
+        if (m.primaryMs > 0 || m.fastMs > 0)
+            r << L("VFG model timing: primary %1 ms, faster %2 ms.")
+                    .arg(m.primaryMs, 0, 'f', 2).arg(m.fastMs, 0, 'f', 2);
+        r << L("NVIDIA VFG output (application): %1 real + %2 generated = %3 fps; %4 real / %5 generated frames this session")
+                 .arg(n.realFps, 0, 'f', 1).arg(n.generatedFps, 0, 'f', 1)
+                 .arg(n.realFps + n.generatedFps, 0, 'f', 1).arg(n.real).arg(n.generated);
+        if (n.generated)
+            r << L("NVIDIA VFG exchange: device-local Vulkan/CUDA memory. Render-thread processing: %1 ms per input (smoothed)")
+                     .arg(n.processingMs, 0, 'f', 2);
+    }
+    r << L("HDR: capture peak ") + QString::number(int(s_.hdrPeak)) + L(" nits, output ") + (hdrOutputActive() ? L("on") : L("off"));
     if (liveVulkanActive()) {
-        r << QString("Delay in VeyAmux: %1 ms, GPU %2 ms per picture").arg(liveVk_->pipelineMs(), 0, 'f', 1).arg(liveVk_->gpuMs(), 0, 'f', 2);
+        r << L("Delay in VeyAmux: %1 ms, GPU %2 ms per picture").arg(liveVk_->pipelineMs(), 0, 'f', 1).arg(liveVk_->gpuMs(), 0, 'f', 2);
         const auto st = liveVk_->gpuStageMs();
         QStringList parts;
         static const char* names[] = {"input", "anti-flicker/denoise", "AA", "upscale", "finish", "output"};
-        for (size_t k = 0; k < st.size() && k < 6; ++k) if (st[k] > 0) parts << QString("%1 %2").arg(names[k]).arg(st[k], 0, 'f', 2);
-        if (!parts.isEmpty()) r << "GPU stages (ms): " + parts.join(", ");
+        for (size_t k = 0; k < st.size() && k < 6; ++k) if (st[k] > 0) parts << QString("%1 %2").arg(L(names[k])).arg(st[k], 0, 'f', 2);
+        if (!parts.isEmpty()) r << L("GPU stages (ms): ") + parts.join(", ");
     }
     updateOverlay();
-    if (!overlayStats_.isEmpty()) r << "On screen: " + QString(overlayStats_).replace('\n', " · ");
-    r << "(VeyAmux's own software timing, not controller-to-screen.)";
+    if (!overlayStats_.isEmpty()) r << L("On screen: ") + QString(overlayStats_).replace('\n', " · ");
+    r << L("(VeyAmux's own software timing, not controller-to-screen.)");
     return r.join('\n');
 }
 

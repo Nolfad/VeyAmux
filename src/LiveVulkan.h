@@ -57,6 +57,15 @@ public:
     void requestScreenshot(std::function<void(QImage)> cb);
     QString lastError() const;
     QString lastUpError() const;
+    QString nvidiaVfgError() const;
+    bool nvidiaVfgActive() const { return nvidiaVfgActive_.load(); }
+    struct NvidiaFrameStats {
+        uint64_t real = 0, generated = 0;
+        double realFps = 0, generatedFps = 0, processingMs = 0;
+        veyamux::NvidiaVfg::Stats models{};
+    };
+    // Per activation. Counts pictures published by the application, including real-only fallback.
+    NvidiaFrameStats nvidiaFrameStats() const;
 
 signals:
     void outputChanged();                                  // a new image/size/active state: items must re-sync
@@ -73,7 +82,17 @@ private:
     bool hasNew_ = false, haveCurrent_ = false, redraw_ = false;
     veyamux::EnhanceSettings settings_;
     std::string error_;
-    std::string upError_;
+    std::string upError_, nvidiaVfgError_;
+    std::atomic<bool> nvidiaVfgActive_{false};
+    using Clock = std::chrono::steady_clock;
+    struct NvidiaPublication { Clock::time_point time; bool generated; };
+    std::deque<NvidiaPublication> nvidiaRecent_;
+    Clock::time_point nvidiaStarted_{};
+    NvidiaFrameStats nvidiaStats_;
+    uint64_t nvidiaEpoch_ = 0;
+    void resetNvidiaStats();   // with m_ held
+    void noteNvidiaPublication(uint64_t epoch, bool generated, double processingMs = -1);
+    std::atomic<bool> resetFg_{true};
     std::atomic<bool> active_{false};
     std::atomic<uint64_t> image_{0}, gen_{0};
     std::atomic<int> imgW_{0}, imgH_{0};
@@ -89,6 +108,10 @@ private:
     std::atomic<uint64_t> lastHandle_{0};
     std::atomic<uint64_t> shown_{0};
     void noteShown();
+    void scheduleRealUpdate(bool nvidia = false);
+    bool showPendingReal();
+    std::atomic<bool> realUpdateScheduled_{false};
+    std::atomic<int> displayPeriodUs_{16667};
     mutable std::mutex timesM_;
     std::deque<double> shownTimes_;
     std::mutex sinkM_;

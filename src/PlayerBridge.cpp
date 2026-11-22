@@ -41,12 +41,14 @@ using veyamux::MediaEngine;
 
 PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
     : QObject(parent), engine_(shaderDir.toStdString()), rec_(std::make_unique<veyamux::Recorder>()) {
-    setTheme(QSettings().value("ui/theme", "vice").toString());
+    QSettings local;
+    const QSettings original("VeyAmux", "VeyAmux");
+    setTheme(local.value("ui/theme", original.value("ui/theme", "vice")).toString());
     // the game's rumble (Remote Play) goes to the controller (main.cpp: psRumble -> GamepadInput::rumble)
     veyamux::remoteplay::setRumbleCallback([this](int low, int high) {
         QMetaObject::invokeMethod(this, [this, low, high] { emit psRumble(low, high); }, Qt::QueuedConnection);
     });
-    setLanguageChoice(QSettings().value("ui/lang", "auto").toString());
+    setLanguageChoice(local.value("ui/lang", original.value("ui/lang", "auto")).toString());
     rec_->onMessage = [this](const std::string& m, bool error) {
         const QString q = QString::fromStdString(m);
         QMetaObject::invokeMethod(this, [this, q, error] { onRecMessage(q, error); }, Qt::QueuedConnection);
@@ -165,12 +167,12 @@ PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
             if (qEnvironmentVariableIsSet("VEYAMUX_DEBUG_FG"))
                 qInfo("timing:%s", qPrintable(timingText(liveVk_->gpuMs(), liveVk_->gpuStageMs(), liveVk_->lastMs(), pipe)));
             gpuName_ = L("Vulkan (shared with the UI)", "Vulkan (delt med brugerfladen)");
-            upError_ = s_.upscaler == veyamux::Upscaler::AmdFsr3 ? translateMessage(liveVk_->lastUpError()) : QString();
+            upError_ = (s_.upscaler == veyamux::Upscaler::AmdFsr3 || s_.upscaler == veyamux::Upscaler::NvidiaDlss) ? translateMessage(liveVk_->lastUpError()) : QString();
             updateLsfgMultiplier();
             emit statsChanged();
             return;
         }
-        upError_ = s_.upscaler == veyamux::Upscaler::AmdFsr3 ? translateMessage(QString::fromStdString(st.upError)) : QString();
+        upError_ = (s_.upscaler == veyamux::Upscaler::AmdFsr3 || s_.upscaler == veyamux::Upscaler::NvidiaDlss) ? translateMessage(QString::fromStdString(st.upError)) : QString();
         updateLsfgMultiplier();
         perf_ = delayText(st.gpuActive ? std::max(0.0, double(st.gpuMs)) + st.processMs : st.processMs, false, QSize(st.outW, st.outH))
                 + (st.dropped ? QString(" · %1 %2").arg(st.dropped).arg(L("dropped", "tabt")) : QString());
@@ -179,7 +181,7 @@ PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
     });
     tick_.start();
     // updates: asked by itself a few seconds after the start (not while the first picture is being set up)
-    if (autoUpdateCheck() && qEnvironmentVariable("VEYAMUX_NO_UPDATE_CHECK") != "1")
+    if (!appVersion().contains("-nvidia") && autoUpdateCheck() && qEnvironmentVariable("VEYAMUX_NO_UPDATE_CHECK") != "1")
         QTimer::singleShot(8000, this, [this] { checkForUpdate(false); });
 }
 
@@ -358,8 +360,8 @@ void PlayerBridge::toggleCompare() {
     const int fps = int(std::lround(c.contentFps > 1 ? c.contentFps : engine_.info().fps));
     QString what;
     if (s_.enabled && s_.scale > 1.001f) {
-        static const char* names[] = {"SGSR", "FSR 3.1", "FSR 1", "NIS"};
-        what = QString(" · %1 %2×").arg(names[std::clamp(int(s_.upscaler), 0, 3)]).arg(double(s_.scale));
+        static const char* names[] = {"SGSR", "FSR 3.1", "FSR 1", "NIS", "DLSS SR"};
+        what = QString(" · %1 %2×").arg(names[std::clamp(int(s_.upscaler), 0, 4)]).arg(double(s_.scale));
     }
     const QString a = L("Original", "Original") + (fps > 0 ? QString(" · %1 fps").arg(fps) : QString());
     const QString b = "VeyAmux" + what;
@@ -435,8 +437,13 @@ void PlayerBridge::updateOverlay() {
         std::sort(sorted.begin(), sorted.end());
         const double p99 = sorted[std::min(sorted.size() - 1, size_t(sorted.size() * 0.99))];
         overlayTarget_ = mean;
-        QString s = QString("%1 fps · %2 ms · 1%-low %3 fps · jitter %4 ms")
+        QString s = L("%1 fps · %2 ms · 1%-low %3 fps · jitter %4 ms")
                         .arg(1000.0 / mean, 0, 'f', 1).arg(mean, 0, 'f', 2).arg(1000.0 / p99, 0, 'f', 0).arg(std::sqrt(var / iv.size()), 0, 'f', 2);
+        if (s_.frameGen == veyamux::FrameGenMode::NvidiaVfg && liveVulkanActive()) {
+            const auto n = liveVk_->nvidiaFrameStats();
+            s += L("\nNVIDIA VFG: %1 real + %2 generated fps")
+                     .arg(n.realFps, 0, 'f', 1).arg(n.generatedFps, 0, 'f', 1);
+        }
         if (liveVulkanActive() && liveVk_->pipelineMs() > 0) s += L(" · delay %1 ms", " · forsinkelse %1 ms").arg(liveVk_->pipelineMs(), 0, 'f', 1);
         const auto st = engine_.stats();
         if (st.dropped) s += L(" · %1 dropped", " · %1 tabt").arg(st.dropped);
@@ -691,8 +698,8 @@ void PlayerBridge::loadSettings() {
     obs_.setMaxHeight(std::clamp(q.value("obs/height", 1080).toInt(), 0, 4320));
     obsFile_ = q.value("obs/file").toString();
     s_.enabled = q.value("enh/enabled", true).toBool();
-    s_.scale = float(q.value("enh/scale", 1.0).toDouble());
-    s_.upscaler = veyamux::Upscaler(std::clamp(q.value("enh/upscaler", 0).toInt(), 0, 3));
+    s_.scale = float(q.value("enh/scale", 4.0 / 3.0).toDouble());
+    s_.upscaler = veyamux::Upscaler(std::clamp(q.value("enh/upscaler", 4).toInt(), 0, 4));
     s_.fxaa = q.value("enh/fxaa", false).toBool();
     s_.deflicker = q.value("enh/deflicker", false).toBool();
     s_.retroTv = q.value("enh/retroTv", false).toBool();
@@ -707,9 +714,11 @@ void PlayerBridge::loadSettings() {
     s_.vrr = q.value("enh/vrr", false).toBool();
     s_.pacingRepair = q.value("enh/pacingRepair", false).toBool();
     s_.hudLock = q.value("enh/hudLock", false).toBool();
-    // Default: Lossless Scaling 2x. The old in-app modes (1 AMD FSR / RIFE, 4 RIFE + Lossless Scaling) become 2x.
+    s_.nvidiaQuality = qBound(0, q.value("enh/nvidiaQuality", 1).toInt(), 2);
+    s_.nvidiaAutoRegulate = q.value("enh/nvidiaAutoRegulate", true).toBool();
+    // The experimental profile starts with NVIDIA VFG. The old in-app modes (1 AMD FSR / RIFE, 4 RIFE + Lossless Scaling) become 2x.
     {
-        int fg = std::clamp(q.value("enh/frameGenMode", 2).toInt(), 0, 5);
+        int fg = std::clamp(q.value("enh/frameGenMode", 6).toInt(), 0, 6);
         if (fg == 1 || fg == 4) fg = 2;   // 5 = AMD FSR 3.1 frame generation (free)
         s_.frameGen = veyamux::FrameGenMode(fg);
     }
@@ -839,7 +848,7 @@ void PlayerBridge::checkHighRate() {
             showNotice(L("120 Hz signal: Lossless Scaling keeps generating frames. Set frame generation to Off to stop it",
                          "120 Hz-signal: Lossless Scaling laver stadig billeder. Sæt frame generation til Fra for at stoppe den"));
         }
-    } else if (s_.frameGen == veyamux::FrameGenMode::FsrFree) {
+    } else if (s_.frameGen == veyamux::FrameGenMode::FsrFree || s_.frameGen == veyamux::FrameGenMode::NvidiaVfg) {
         showNotice(fgPaused_ ? L("120 Hz signal: frame generation paused", "120 Hz-signal: frame generation sat på pause")
                              : L("Frame generation resumed", "Frame generation kører igen"));
     }
@@ -855,7 +864,7 @@ void PlayerBridge::checkOverRefresh() {
     int mult = 1;
     if (engine_.isOpen() && engine_.isLive() && !fgPaused_) {
         if (s_.lsfgFg() && lsfgActive_) mult = lsfgMultiplier_;
-        else if (s_.fsrFg() && liveVulkanActive()) mult = 2;
+        else if ((s_.fsrFg() || nvidiaVfgActive()) && liveVulkanActive()) mult = 2;
     }
     const double hz = displayHz();
     const double base = mult > 1 ? frameGenBaseFps() : 0.0;
@@ -888,6 +897,7 @@ QString PlayerBridge::outputFpsText(double srcFps) const {
     const bool ls = s_.lsfgFg();
     if (ls && lsfgActive_ && lsfgMultiplier_ > 1 && srcFps > 0)
         return QString(" → %1 fps (Lossless Scaling %2×)").arg(std::lround(frameGenBaseFps() * lsfgMultiplier_)).arg(lsfgMultiplier_);
+    if (nvidiaVfgActive() && srcFps > 0) return QStringLiteral(" · NVIDIA VFG 2×");
     if (s_.fsrFg() && liveVulkanActive() && srcFps > 0)
         return QString(" → %1 fps (AMD FSR 3.1 2×)").arg(std::lround(frameGenBaseFps() * 2));
     return {};
@@ -901,7 +911,7 @@ QString PlayerBridge::mediaInfo() const {
         // A capture card always sends its fixed signal (e.g. 3840x2160 @ 60): lead with what the game actually renders
         // (measured frame rate, estimated resolution with "~"), the signal after it.
         const auto c = engine_.liveContent();
-        const QString signal = QString("signal %1×%2 %3%4").arg(i.width).arg(i.height).arg(QString::fromStdString(i.videoCodec))
+        const QString signal = L("signal %1×%2 %3%4").arg(i.width).arg(i.height).arg(QString::fromStdString(i.videoCodec))
                                    .arg(i.fps > 0 ? QString(" @ %1 fps").arg(i.fps, 0, 'f', 2) : QString());
         if (c.contentFps > 0 || c.estW > 0) {
             QString res;
@@ -989,7 +999,7 @@ void PlayerBridge::applyEnhance() { engine_.setEnhance(s_); if (liveVk_) liveVk_
 void PlayerBridge::setEnhance(bool v) { s_.enabled = v; applyEnhance(); }
 void PlayerBridge::setScale(double v) { s_.scale = float(qBound(1.0, v, 4.0)); applyEnhance(); }
 void PlayerBridge::setUpscaler(int v) {
-    v = std::clamp(v, 0, 3);
+    v = std::clamp(v, 0, 4);
     if (int(s_.upscaler) == v) return;
     s_.upscaler = veyamux::Upscaler(v);
     applyEnhance();
@@ -997,7 +1007,7 @@ void PlayerBridge::setUpscaler(int v) {
 void PlayerBridge::setFxaa(bool v) { s_.fxaa = v; applyEnhance(); }
 void PlayerBridge::setDeflicker(bool v) { s_.deflicker = v; applyEnhance(); }
 void PlayerBridge::setFrameGenMode(int v) {
-    v = std::clamp(v, 0, 5);
+    v = std::clamp(v, 0, 6);
     if (v == 1 || v == 4) v = 2;
     const bool wasLs = s_.lsfgFg();
     s_.frameGen = veyamux::FrameGenMode(v);
@@ -1034,6 +1044,8 @@ void PlayerBridge::resetEnhance() {
     s_ = veyamux::EnhanceSettings{};
     s_.enabled = keep.enabled; s_.frameGen = keep.frameGen; s_.vrr = keep.vrr; s_.hdrPeak = keep.hdrPeak; s_.hdrOut = keep.hdrOut; s_.displayPeak = keep.displayPeak; s_.fgPaused = keep.fgPaused;
     s_.pacingRepair = keep.pacingRepair; s_.hudLock = keep.hudLock; s_.fitW = keep.fitW; s_.fitH = keep.fitH;
+    s_.nvidiaQuality = keep.nvidiaQuality;
+    s_.nvidiaAutoRegulate = keep.nvidiaAutoRegulate;
     activeProfile_.clear();
     emit profilesChanged();
     applyEnhance();
@@ -1098,7 +1110,7 @@ bool PlayerBridge::loadProfile(const QString& name) {
     if (!q.contains(g + "scale")) return false;
     s_.enabled = q.value(g + "enabled", true).toBool();
     s_.scale = float(q.value(g + "scale", 1.0).toDouble());
-    s_.upscaler = veyamux::Upscaler(std::clamp(q.value(g + "upscaler", 0).toInt(), 0, 3));
+    s_.upscaler = veyamux::Upscaler(std::clamp(q.value(g + "upscaler", 0).toInt(), 0, 4));
     s_.fxaa = q.value(g + "fxaa", false).toBool();
     s_.deflicker = q.value(g + "deflicker", false).toBool();
     s_.fxaaQuality = std::clamp(q.value(g + "fxaaQuality", 1).toInt(), 0, 2);
@@ -1225,14 +1237,14 @@ const QJsonObject& messageTable() {
     }();
     return t;
 }
-const QStringList kLanguages{"en", "da", "de", "es", "fr", "sv", "nb", "ru"};
+const QStringList kLanguages{"en", "da", "de", "es", "fr", "sv", "nb", "ru", "pt-BR"};
 }
 
 QString PlayerBridge::L(const char* en, const char* da) const {
     if (lang_ == "en") return QString::fromUtf8(en);
-    if (lang_ == "da" && std::strcmp(en, da) != 0) return QString::fromUtf8(da);
+    if (lang_ == "da" && da && std::strcmp(en, da) != 0) return QString::fromUtf8(da);
     const QJsonValue v = messageTable().value(lang_).toObject().value(QString::fromUtf8(en));
-    return v.isString() ? v.toString() : QString::fromUtf8(lang_ == "da" ? da : en);
+    return v.isString() ? v.toString() : QString::fromUtf8(lang_ == "da" && da ? da : en);
 }
 
 QString PlayerBridge::systemLanguage() {
@@ -1246,6 +1258,7 @@ QString PlayerBridge::systemLanguage() {
     for (QString c : cands) {
         c = c.left(c.indexOf(QRegularExpression("[_.@-]")) < 0 ? c.size() : c.indexOf(QRegularExpression("[_.@-]"))).toLower();
         if (c == "no" || c == "nn") c = "nb";
+        if (c == "pt") return QStringLiteral("pt-BR");
         if (kLanguages.contains(c)) return c;
         if (!c.isEmpty() && c != "c" && c != "posix") return "en";
     }
@@ -1633,6 +1646,33 @@ void PlayerBridge::restartApp() {
 
 QString PlayerBridge::translateMessage(const QString& msg) const {
     if (lang_ == "en" || msg.isEmpty()) return msg;
+    const auto table = messageTable().value(lang_).toObject();
+    const auto exact = table.value(msg);
+    if (exact.isString()) return exact.toString();
+    // Preserve paths, device codes and progress values supplied by the runtime.
+    static const char* const templates[] = {
+        "NVIDIA VFG: %1%",
+        "Expected 62 known SM89 kernel images; found %1",
+        "Incomplete or unrecognized installation at %1. Move it aside to retry.",
+        "Missing runtime function %1",
+        "CUDA initialization or device enumeration failed (cuInit=%1)",
+        "DLSS SR: initialize the NVIDIA NGX runtime failed (NGX 0x%1)",
+        "DLSS SR: query driver capabilities failed (NGX 0x%1)",
+        "DLSS SR: create Super Resolution feature failed (NGX 0x%1)",
+        "DLSS SR: evaluate frame failed (NGX 0x%1)"
+    };
+    for (const char* pattern : templates) {
+        const QString key = QString::fromLatin1(pattern);
+        const auto translated = table.value(key);
+        if (!translated.isString()) continue;
+        const auto start = key.indexOf("%1");
+        const auto after = key.sliced(start + 2);
+        if (msg.size() >= start + after.size() && msg.startsWith(key.first(start)) && msg.endsWith(after))
+            return translated.toString().arg(msg.sliced(start, msg.size() - start - after.size()));
+    }
+    const QString fasterPrefix = QStringLiteral("Faster model unavailable: ");
+    if (msg.startsWith(fasterPrefix) && table.value(fasterPrefix).isString())
+        return table.value(fasterPrefix).toString() + translateMessage(msg.sliced(fasterPrefix.size()));
     // messages from the engine start with one of these English texts; the rest (a path, a reason) is kept
     static const char* const prefixes[] = {
         "Audio unavailable: ",
@@ -1686,6 +1726,13 @@ QString PlayerBridge::translateMessage(const QString& msg) const {
     for (const char* en : prefixes) {
         const QString e = QString::fromUtf8(en);
         if (msg.startsWith(e)) return L(en, en) + msg.mid(e.size());
+    }
+    // The vendor's diagnostic follows an application-defined operation name.
+    for (const auto delimiter : {QStringLiteral(" ("), QStringLiteral(": ")}) {
+        const auto end = msg.indexOf(delimiter);
+        if (end <= 0) continue;
+        const auto translated = table.value(msg.first(end));
+        if (translated.isString()) return translated.toString() + msg.sliced(end);
     }
     return msg;
 }

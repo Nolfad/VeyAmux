@@ -4,26 +4,37 @@
 #   qt6-wayland libvulkan-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
 #   libpulse-dev libva-dev qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-layouts patchelf file
 #   libssl-dev libcurl4-openssl-dev libjson-c-dev libminiupnpc-dev libevent-dev libopus-dev  (PlayStation Remote Play)
-#   python3 glslang-tools  (AMD FidelityFX shader generation)  qt6-shader-baker (qsb, HDR output shaders)  zsync (zsyncmake)
+#   git (NVIDIA SDK)  python3 glslang-tools (AMD FidelityFX shader generation)  qt6-shader-baker (HDR shaders)  zsync
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${BUILD_DIR:-$ROOT/build}"; APPDIR="$BUILD/AppDir"; OUT="${OUT_DIR:-$ROOT/dist}"
 "$ROOT/scripts/fetch-tools.sh"
+if [[ ! -f "$ROOT/.tools/dlss/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.16" ]]; then
+  "$ROOT/scripts/fetch-dlss.sh"
+fi
 T="$ROOT/.tools"; export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1   # works without FUSE (containers/CI)
 
-cmake -G Ninja -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DVEYAMUX_DXC_ROOT="$T/dxc"
-cmake --build "$BUILD"
+cmake -G Ninja -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DVEYAMUX_DXC_ROOT="$T/dxc" "$@"
+cmake --build "$BUILD" --target veyamux veyamux-nvidia-vfg-probe
 rm -rf "$APPDIR"; DESTDIR="$APPDIR" cmake --install "$BUILD"
 
 QMAKE="$(command -v qmake6 || echo /usr/lib/qt6/bin/qmake6)"; export QMAKE
 export QML_SOURCES_PATHS="$ROOT/qml"
-export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so"
+export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so;libqoffscreen.so"
 export EXTRA_QT_PLUGINS="svg;wayland-decoration-client;wayland-graphics-integration-client;wayland-shell-integration;platforminputcontexts;xcbglintegrations"
 export PATH="$T/appimage:$PATH"
+
+# linuxdeploy rewrites the RPATH of every ELF file it sees. NGX loads the
+# signed feature separately, so keep the original bytes outside its scan.
+ngx="$APPDIR/usr/lib/veyamux/ngx/libnvidia-ngx-dlss.so"
+if [[ -f "$ngx" ]]; then mv "$ngx" "$BUILD/ngx-release-library"; fi
 
 # Pass 1: collect libraries + Qt plugins (no packaging yet).
 "$T/appimage/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin qt \
   -d "$APPDIR/usr/share/applications/veyamux.desktop" -i "$APPDIR/usr/share/icons/hicolor/scalable/apps/veyamux.svg"
+if [[ -d "${ngx%/*}" && -f "$BUILD/ngx-release-library" ]]; then
+  mv "$BUILD/ngx-release-library" "$ngx"
+fi
 
 # The Vulkan loader and every GPU driver must come from the HOST (RADV/ANV/NVIDIA ICDs live there).
 find "$APPDIR" \( -name 'libvulkan.so*' -o -name 'libGL.so*' -o -name 'libEGL.so*' -o -name 'libGLX*.so*' -o -name 'libOpenGL.so*' \
@@ -38,6 +49,11 @@ find "$APPDIR" \( -name 'libvulkan.so*' -o -name 'libGL.so*' -o -name 'libEGL.so
 mkdir -p "$OUT"
 # Update information: AppImageUpdate / Gear Lever find new versions among the GitHub releases (upload the .zsync file
 # next to the AppImage in every release).
-UPDATE_INFO="${VEYAMUX_UPDATE_INFO:-gh-releases-zsync|8BiTw0LF|VeyAmux|latest|VeyAmux-x86_64.AppImage.zsync}"
-( cd "$OUT" && ARCH=x86_64 "$T/appimage/appimagetool-x86_64.AppImage" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "VeyAmux-x86_64.AppImage" )
-echo "Built: $OUT/VeyAmux-x86_64.AppImage (+ .zsync for the release)"
+UPDATE_INFO="${VEYAMUX_UPDATE_INFO:-none}"
+# A local experimental build must not advertise replacement by an upstream binary.
+update_args=()
+if [[ "$UPDATE_INFO" != none ]]; then
+  update_args=(-u "$UPDATE_INFO")
+fi
+( cd "$OUT" && ARCH=x86_64 "$T/appimage/appimagetool-x86_64.AppImage" --no-appstream --runtime-file "$T/appimage/runtime-x86_64" "${update_args[@]}" "$APPDIR" "VeyAmux-x86_64.AppImage" )
+echo "Built: $OUT/VeyAmux-x86_64.AppImage"

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 
 namespace veyamux {
 namespace {
@@ -43,6 +44,7 @@ EnhanceChain::~EnhanceChain() {
     releaseStream();
     fsrUp_.reset();
     fg_.reset();
+    nvidiaVfg_.reset();
     ctx_.destroy(nisScale_);
     ctx_.destroy(smaaArea_);
     ctx_.destroy(smaaSearch_);
@@ -290,13 +292,25 @@ void EnhanceChain::recordPost(const ImageRes* start, const EnhanceSettings& s) {
         // A setup failure is not retried every frame (context creation stalls the GPU): only after the size or the
         // upscaler choice changes.
         const uint64_t key = (uint64_t(w) << 48) ^ (uint64_t(h) << 32) ^ (uint64_t(ow) << 16) ^ uint64_t(oh);
-        if (s.upscaler == Upscaler::AmdFsr3 && key != upFailedKey_) {
+        if (s.upscaler != previousUpscaler_) {
+            upHistory_ = false;
+            upFailedKey_ = 0;
+            upError_.clear();
+            previousUpscaler_ = s.upscaler;
+        }
+        const bool dlss = s.upscaler == Upscaler::NvidiaDlss;
+        if ((dlss || s.upscaler == Upscaler::AmdFsr3) && key != upFailedKey_) {
             std::string e;
-            done = fsrUp_->record(ctx_.active(), *cur, up_, !upHistory_, frameMs_, e);
+            if (dlss) {
+                if (!dlssUp_) dlssUp_ = std::make_unique<DlssUpscaler>(ctx_, dir_);
+                done = dlssUp_->record(ctx_.active(), *cur, up_, !upHistory_, frameMs_, e);
+            } else {
+                done = fsrUp_->record(ctx_.active(), *cur, up_, !upHistory_, frameMs_, e);
+            }
             upHistory_ = done;
             if (!done) { upError_ = e; upFailedKey_ = key; }
             else upError_.clear();
-        } else if (s.upscaler != Upscaler::AmdFsr3) {
+        } else if (!dlss && s.upscaler != Upscaler::AmdFsr3) {
             upHistory_ = false;
             upError_.clear();
             upFailedKey_ = 0;
@@ -533,7 +547,25 @@ bool EnhanceChain::recordLive(VkCommandBuffer cb, int slot, const LiveInput& in,
     const size_t bytes = std::min<size_t>(in.size, size_t(liveStagingSize_));
     std::memcpy(liveStaging_[sl].mapped, in.data, bytes);
 
-    ctx_.beginExternal(cb, sl);
+    if (fgMode_ != s.frameGen) {
+        fgMode_ = s.frameGen;
+        fgReset_ = true;
+        fgError_.clear();
+        if (fgMode_ != FrameGenMode::NvidiaVfg) nvidiaVfg_.reset();
+    }
+    const VkCommandBuffer displayCb = cb;
+    bool nvidia = false;
+    if (s.nvidiaFg()) {
+        if (!nvidiaVfg_) nvidiaVfg_ = std::make_unique<NvidiaVfg>(ctx_);
+        nvidia = nvidiaVfg_->prepare(out8_.width, out8_.height, s.nvidiaQuality, s.nvidiaAutoRegulate);
+        if (!nvidia) fgError_ = nvidiaVfg_->error();
+    }
+    if (nvidia) {
+        // CUDA consumes the finished upscale. Submit only our commands, never wait on
+        // the Qt frame being recorded. The current Qt slot is already safe to reuse.
+        if (!ctx_.beginInteropFrame(sl, error)) return false;
+        cb = ctx_.active();
+    } else ctx_.beginExternal(cb, sl);
     timer_.begin(cb, sl);
     // Previous frames may still be reading our images (Qt's fragment pass) or the staging buffer: wait for them.
     {
@@ -611,9 +643,15 @@ bool EnhanceChain::recordLive(VkCommandBuffer cb, int slot, const LiveInput& in,
     }
     if (shotWanted_.exchange(false)) recordShot(cb, out8_);
 
-    // FSR frame generation: the generated frame goes to the display image now, the real one half a frame later.
-    if (s.fsrFg()) {
-        if (recordFg(cb)) return true;
+    if (nvidia) {
+        nvidiaVfg_->capture(cb, out8_);
+        if (!nvidiaVfg_->submitLiveCapture(error)) return false;
+        cb = displayCb;
+        ctx_.resumeExternal(cb);
+    }
+    // The generated frame goes to the display image now, the real one half a frame later.
+    if (s.fsrFg() || nvidia) {
+        if (recordFg(cb, nvidia, in.generatedDue)) return true;
     } else if (fgActive_) {
         fgActive_ = fgRealPending_ = false;   // back to showing out8_ directly
         fgReset_ = true;
@@ -706,8 +744,8 @@ void EnhanceChain::copyToDisplay(VkCommandBuffer cb, const ImageRes& src) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &o);
 }
 
-bool EnhanceChain::recordFg(VkCommandBuffer cb) {
-    if (disp_.width != out8_.width || disp_.height != out8_.height || !disp_.image) {
+bool EnhanceChain::recordFg(VkCommandBuffer cb, bool nvidia, std::chrono::steady_clock::time_point generatedDue) {
+    if (disp_.width != out8_.width || disp_.height != out8_.height || !disp_.image || !fgOut_.image) {
         retire(fgOut_);   // Qt may still be drawing the old display image: freed a few frames later
         retire(disp_);
         fgOut_ = ImageRes{};
@@ -717,17 +755,35 @@ bool EnhanceChain::recordFg(VkCommandBuffer cb) {
         fgOut_ = ctx_.createImage(out8_.width, out8_.height, VK_FORMAT_R8G8B8A8_UNORM, u);
         disp_ = ctx_.createImage(out8_.width, out8_.height, VK_FORMAT_R8G8B8A8_UNORM, u);
         for (ImageRes* i : {&hudState_, &hudPrev_[0], &hudPrev_[1], &hudOut_}) retire(*i), *i = ImageRes{};
-        if (!fgOut_.image || !disp_.image) { fgError_ = "Out of GPU memory for frame generation"; return false; }
+        if (!fgOut_.image || !disp_.image) { fgActive_ = fgRealPending_ = false; fgError_ = "Out of GPU memory for frame generation"; return false; }
         ctx_.transitionToGeneral(fgOut_.image);
         fgReset_ = true;
         ++liveGen_;
     }
     if (!fgActive_) { fgActive_ = true; fgReset_ = true; ++liveGen_; if (std::getenv("VEYAMUX_DEBUG_FG")) std::fprintf(stderr, "FG: on (%ux%u, HUD lock %d)\n", out8_.width, out8_.height, int(hudLock_)); }
-    if (!fg_) fg_ = std::make_unique<FsrFrameGen>(ctx_, dir_);
     ctx_.computeBarrier();
-    const bool reset = fgReset_;
+    bool reset = fgReset_;
     std::string err;
-    if (!fg_->record(cb, out8_, fgOut_, reset, frameMs_, err)) {
+    bool ok = false;
+    if (nvidia) {
+        bool generated = false;
+        double budgetMs = std::numeric_limits<double>::infinity();
+        if (generatedDue != std::chrono::steady_clock::time_point{}) {
+            // Preprocessing was just submitted asynchronously. Reserve its recent
+            // measured GPU cost when predicting whether inference will meet this deadline.
+            const double nowRemaining = std::chrono::duration<double, std::milli>(
+                    generatedDue - std::chrono::steady_clock::now()).count();
+            budgetMs = nowRemaining - std::max(0.0f, timer_.totalMs());
+        }
+        ok = nvidiaVfg_->interpolate(reset, generated, budgetMs);
+        if (ok && generated) nvidiaVfg_->upload(cb, fgOut_);
+        if (!ok) err = nvidiaVfg_->error();
+        reset = !generated;
+    } else {
+        if (!fg_) fg_ = std::make_unique<FsrFrameGen>(ctx_, dir_);
+        ok = fg_->record(cb, out8_, fgOut_, reset, frameMs_, err);
+    }
+    if (!ok) {
         if (std::getenv("VEYAMUX_DEBUG_FG") && err != fgError_) std::fprintf(stderr, "FG: %s\n", err.c_str());
         fgError_ = err;
         fgActive_ = fgRealPending_ = false;

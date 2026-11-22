@@ -1,4 +1,5 @@
 #include "VkContext.h"
+#include "DlssUpscaler.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -51,13 +52,18 @@ bool VkContext::init(std::string& error) {
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
     // Debug labels/names from the FidelityFX backend need VK_EXT_debug_utils (only used when present).
+    const auto ngxInstanceExtensions = DlssUpscaler::extensions();
     std::vector<const char*> instExts;
     {
         uint32_t n = 0;
         vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
         std::vector<VkExtensionProperties> av(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, av.data());
-        for (auto& e : av) if (std::strcmp(e.extensionName, "VK_EXT_debug_utils") == 0) instExts.push_back("VK_EXT_debug_utils");
+        for (auto& e : av) {
+            if (std::strcmp(e.extensionName, "VK_EXT_debug_utils") == 0) instExts.push_back("VK_EXT_debug_utils");
+            else for (const auto& name : ngxInstanceExtensions)
+                if (name == e.extensionName) instExts.push_back(name.c_str());
+        }
     }
     ici.enabledExtensionCount = uint32_t(instExts.size());
     ici.ppEnabledExtensionNames = instExts.data();
@@ -151,6 +157,7 @@ bool VkContext::finishInit(std::string& error, bool shared) {
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
+    const auto ngxDeviceExtensions = props.vendorID == 0x10de ? DlssUpscaler::extensions(instance_, phys_) : std::vector<std::string>{};
     std::vector<const char*> devExts;
     {
         uint32_t ne = 0;
@@ -166,6 +173,13 @@ bool VkContext::finishInit(std::string& error, bool shared) {
         for (const char* e : {"VK_EXT_subgroup_size_control", "VK_KHR_shader_float16_int8", "VK_KHR_16bit_storage",
                                "VK_KHR_get_memory_requirements2", "VK_KHR_dedicated_allocation"})
             if (has(e)) devExts.push_back(e);
+        if (props.vendorID == 0x10de) {
+            for (const char* extension : {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME})
+                if (has(extension)) devExts.push_back(extension);
+        }
+        for (const auto& name : ngxDeviceExtensions)
+            if (has(name.c_str()) && std::none_of(devExts.begin(), devExts.end(),
+                    [&](const char* e) { return name == e; })) devExts.push_back(name.c_str());
     }
     dci.enabledExtensionCount = uint32_t(devExts.size());
     dci.ppEnabledExtensionNames = devExts.data();
@@ -275,6 +289,52 @@ BufferRes VkContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, b
     vkBindBufferMemory(device_, r.buffer, r.memory, 0);
     vkMapMemory(device_, r.memory, 0, VK_WHOLE_SIZE, 0, &r.mapped);
     return r;
+}
+
+bool VkContext::createCudaExchange(VkDeviceSize bytes, BufferRes& result, VkDeviceSize& allocationSize,
+                                   int& fd, std::string& error) {
+    const auto exportFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(device_, "vkGetMemoryFdKHR"));
+    if (!exportFd) { error = "Vulkan driver lacks opaque-FD GPU memory export"; return false; }
+    constexpr auto handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    constexpr VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkPhysicalDeviceExternalBufferInfo query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO};
+    query.usage = usage;
+    query.handleType = handleType;
+    VkExternalBufferProperties properties{VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(phys_, &query, &properties);
+    if (!(properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+        error = "GPU cannot export the VFG transfer buffer"; return false;
+    }
+
+    VkExternalMemoryBufferCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    external.handleTypes = handleType;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.pNext = &external;
+    bi.size = bytes;
+    bi.usage = usage;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VK_TRY(vkCreateBuffer(device_, &bi, nullptr, &result.buffer), "Create GPU exchange buffer");
+    result.size = bytes;
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(device_, result.buffer, &mr);
+    VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    dedicated.buffer = result.buffer;
+    VkExportMemoryAllocateInfo exporting{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    exporting.pNext = &dedicated;
+    exporting.handleTypes = handleType;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &exporting;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX) { error = "No device-local memory type for VFG"; return false; }
+    VK_TRY(vkAllocateMemory(device_, &ai, nullptr, &result.memory), "Allocate VFG GPU memory");
+    VK_TRY(vkBindBufferMemory(device_, result.buffer, result.memory, 0), "Bind VFG GPU memory");
+    VkMemoryGetFdInfoKHR info{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    info.memory = result.memory;
+    info.handleType = handleType;
+    VK_TRY(exportFd(device_, &info, &fd), "Export VFG GPU memory");
+    allocationSize = mr.size;
+    return true;
 }
 
 void VkContext::destroy(BufferRes& b) {
@@ -452,9 +512,45 @@ void VkContext::beginExternal(VkCommandBuffer cb, int slot) {
     active_ = cb;
 }
 
-void VkContext::beginFrame() {
-    slot_ = 0;
-    vkResetDescriptorPool(device_, descPools_[0], 0);
+bool VkContext::beginInteropFrame(int slot, std::string& error) {
+    // Qt waits for the previous use of currentFrameSlot before beforeRendering. The
+    // producer is submitted before that slot's Qt command buffer on the exact same
+    // graphics queue, so the Qt frame fence protects its command buffer and descriptors.
+    if (slot < 0 || slot >= kSlots) { error = "Qt frame slot is out of range"; return false; }
+    auto& cb = interopCmds_[slot];
+    if (!cb) {
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = pool_;
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        VK_TRY(vkAllocateCommandBuffers(device_, &ai, &cb), "Allocate VFG producer command buffer");
+    }
+    VK_TRY(vkResetCommandBuffer(cb, 0), "Reset VFG producer command buffer");
+    VK_TRY(vkResetDescriptorPool(device_, descPools_[slot], 0), "Reset VFG descriptor pool");
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_TRY(vkBeginCommandBuffer(cb, &bi), "Begin VFG producer command buffer");
+    slot_ = slot;
+    uboOffset_ = 0;
+    active_ = cb;
+    return true;
+}
+
+bool VkContext::submitInterop(VkSemaphore signal, std::string& error) {
+    const VkCommandBuffer producer = interopCmds_[slot_];
+    VK_TRY(vkEndCommandBuffer(producer), "End VFG producer command buffer");
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &producer;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &signal;
+    VK_TRY(vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE), "Submit VFG producer command buffer");
+    return true;
+}
+
+void VkContext::beginFrame(int slot) {
+    slot_ = ((slot % kSlots) + kSlots) % kSlots;
+    vkResetDescriptorPool(device_, descPools_[slot_], 0);
     uboOffset_ = 0;
     active_ = cmd_;
     vkResetCommandBuffer(cmd_, 0);
@@ -547,11 +643,25 @@ void VkContext::dispatch(VkPipeline pipeline, const ImageRes* const* sampled, ui
     vkCmdDispatch(active_, gx, gy, 1);
 }
 
-bool VkContext::submitAndWait(std::string& error) {
+bool VkContext::waitExternal(VkSemaphore semaphore, std::string& error) {
+    // Qt owns the next graphics submission. An ordered wait on the same graphics queue covers
+    // all subsequent work, including the external->graphics ownership acquire recorded there.
+    VkPipelineStageFlags stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &semaphore;
+    si.pWaitDstStageMask = &stages;
+    VK_TRY(vkQueueSubmit(queue_, 1, &si, VK_NULL_HANDLE), "Queue CUDA completion wait");
+    return true;
+}
+
+bool VkContext::submitAndWait(std::string& error, VkSemaphore signal) {
     VK_TRY(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer");
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd_;
+    si.signalSemaphoreCount = signal ? 1 : 0;
+    si.pSignalSemaphores = signal ? &signal : nullptr;
     vkResetFences(device_, 1, &fence_);
     VK_TRY(vkQueueSubmit(queue_, 1, &si, fence_), "vkQueueSubmit");
     VK_TRY(vkWaitForFences(device_, 1, &fence_, VK_TRUE, 10'000'000'000ull), "vkWaitForFences");

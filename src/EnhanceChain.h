@@ -5,7 +5,9 @@
 #include <atomic>
 #include <mutex>
 #include "FsrUpscaler.h"
+#include "DlssUpscaler.h"
 #include "FsrFrameGen.h"
+#include "NvidiaVfg.h"
 #include "MotionEstimator.h"
 #include "GpuTimer.h"
 #include <array>
@@ -20,11 +22,11 @@ namespace veyamux {
 // VeyAmux's window after VeyAmux has shown its frame, so the chain itself does nothing for them. Values 1 and 4 were
 // in-app frame generation (AMD FSR 3.1, later RIFE) and are read as LsfgFixed.
 // Lossless Scaling 2x / 3x (lsfg-vk), or AMD FSR 3.1 frame generation inside VeyAmux (free, live capture only)
-enum class FrameGenMode { Off = 0, LsfgFixed = 2, LsfgFixed3 = 3, FsrFree = 5 };
+enum class FrameGenMode { Off = 0, LsfgFixed = 2, LsfgFixed3 = 3, FsrFree = 5, NvidiaVfg = 6 };
 // Denoisers (run first, on the source-size linear image, before FXAA/upscaling/sharpening).
 enum class Denoise { Off = 0, Spatial = 1, Temporal = 2, Both = 3 };
 // Upscaling method used when scale > 1. AmdFsr3 falls back to SGSR if FidelityFX cannot run.
-enum class Upscaler { Sgsr = 0, AmdFsr3 = 1, AmdFsr1 = 2, Nis = 3 };   // NIS = NVIDIA Image Scaling (spatial, any GPU)   // FSR 1 = EASU + RCAS (spatial, one frame)
+enum class Upscaler { Sgsr = 0, AmdFsr3 = 1, AmdFsr1 = 2, Nis = 3, NvidiaDlss = 4 };   // NIS = NVIDIA Image Scaling (spatial, any GPU)   // FSR 1 = EASU + RCAS (spatial, one frame)
 
 struct EnhanceSettings {
     bool enabled = true;
@@ -41,6 +43,8 @@ struct EnhanceSettings {
     float displayPeak = 1000.0f;   // HDR output: brightest level of the display in nits (HDR sources are mapped to it)
     bool vrr = false;         // live: show the game's own pictures at an even pace (for VRR displays; frame generation off)
     bool pacingRepair = false;
+    int nvidiaQuality = 1;          // VFX SDK Low / Medium / High
+    bool nvidiaAutoRegulate = true;
     // live: the exact pixel size the picture covers in the window (0 = unknown / pixel-perfect): the finished picture is
     // resampled to it (LxFit, Catmull-Rom) so Qt draws it 1:1 instead of stretching it bilinearly
     int fitW = 0, fitH = 0;
@@ -69,6 +73,7 @@ struct EnhanceSettings {
     // Frame generation is independent of the "Enhance" switch (that one only covers upscale/AA/sharpen/grade).
     bool lsfgFg() const { return frameGen == FrameGenMode::LsfgFixed || frameGen == FrameGenMode::LsfgFixed3; }
     bool fgPaused = false;    // ~120 Hz capture: no generated frames
+    bool nvidiaFg() const { return frameGen == FrameGenMode::NvidiaVfg && !fgPaused; }
     bool fsrFg() const { return frameGen == FrameGenMode::FsrFree && !fgPaused; }
 
     bool isIdentity() const {
@@ -80,6 +85,7 @@ struct EnhanceSettings {
 
 // A raw frame handed to the zero-copy live path (everything after the upload happens on the GPU).
 struct LiveInput {
+    std::chrono::steady_clock::time_point generatedDue{}; // submission target for the intermediate picture
     enum Format { RGBA, YUYV, UYVY, NV12, P010 } fmt = RGBA;   // P010: HDR (PQ, BT.2020), tone-mapped to SDR
     std::chrono::steady_clock::time_point time{};               // capture time (recording timestamps)
     const uint8_t* data = nullptr;
@@ -107,9 +113,11 @@ public:
     // The image Qt shows: out8_, or with FSR frame generation a separate image that gets the generated frame first
     // and the real one half a frame later (recordShowReal).
     const ImageRes& liveDisplay() const { return fgActive_ ? disp_ : out8_; }
+    void resetFgHistory() { fgReset_ = true; }
     bool fgShowRealPending() const { return fgActive_ && fgRealPending_; }
     void recordShowReal(VkCommandBuffer cb);
     const std::string& fgError() const { return fgError_; }
+    NvidiaVfg::Stats nvidiaModelStats() const { return nvidiaVfg_ ? nvidiaVfg_->stats() : NvidiaVfg::Stats{}; }
     // Measured GPU time (Vulkan timestamps), smoothed: total and per stage; -1 when not available.
     float gpuMs() const { return timer_.totalMs(); }
     std::array<float, GpuTimer::kStages> gpuStageMs() const { return timer_.stageMs(); }
@@ -201,7 +209,11 @@ private:
     int w_ = 0, h_ = 0, ow_ = 0, oh_ = 0;
     ImageRes src_, lin_, linB_, luma_, up_, fin_, out8_;
     std::unique_ptr<FsrUpscaler> fsrUp_;
+    std::unique_ptr<DlssUpscaler> dlssUp_;
+    Upscaler previousUpscaler_ = Upscaler::Sgsr;
     std::unique_ptr<FsrFrameGen> fg_;
+    std::unique_ptr<NvidiaVfg> nvidiaVfg_;
+    FrameGenMode fgMode_ = FrameGenMode::Off;
     uint32_t crtFrame_ = 0;          // Retro TV interlace field
     ImageRes nisScale_, nisUsm_;     // NIS filter coefficient tables (2 x 64 RGBA32F each)
     // SMAA 1x: edges, blending weights (source size) and the two lookup tables
@@ -219,7 +231,7 @@ private:
     bool hudLock_ = false, hudReset_ = true;
     bool fgActive_ = false, fgRealPending_ = false, fgReset_ = true;
     std::string fgError_;
-    bool recordFg(VkCommandBuffer cb);
+    bool recordFg(VkCommandBuffer cb, bool nvidia, std::chrono::steady_clock::time_point generatedDue);
     void copyToDisplay(VkCommandBuffer cb, const ImageRes& src);
     // denoisers
     std::unique_ptr<MotionEstimator> nrMotion_;
