@@ -1,0 +1,130 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/sync-upstream.yml
+      - scripts/sync-upstream.sh
+
+env:
+  GH_REPO: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'Nolfad/VeyAmux' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      base: ${{ steps.sync.outputs.base }}
+      commit: ${{ steps.sync.outputs.commit }}
+      tag: ${{ steps.candidate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Merge the upstream source locally
+        id: sync
+        run: bash scripts/sync-upstream.sh
+
+      - name: Select the release candidate
+        id: candidate
+        env:
+          UPDATED: ${{ steps.sync.outputs.updated }}
+          TAG: ${{ steps.sync.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$UPDATED" != true ]]; then
+            # Recover a prior run interrupted after the atomic push but before publication.
+            TAG=$(git tag --points-at HEAD --list 'v*-nvidia-sync.*')
+            [[ -n "$TAG" ]] || exit 0
+            if state=$(gh release view "$TAG" --json isDraft --jq .isDraft) && [[ "$state" == false ]]; then
+              exit 0
+            fi
+          fi
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*-nvidia-sync\.[0-9a-f]{12}$ ]]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          git update-ref refs/heads/sync-candidate HEAD
+          git bundle create "$RUNNER_TEMP/candidate.bundle" refs/heads/sync-candidate
+
+      - uses: actions/upload-artifact@v4
+        if: steps.candidate.outputs.tag != ''
+        with:
+          name: sync-candidate
+          path: ${{ runner.temp }}/candidate.bundle
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - uses: ./.github/actions/build-appimage
+        if: steps.candidate.outputs.tag != ''
+        with:
+          version: ${{ steps.candidate.outputs.version }}
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: veyamux-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: sync-candidate
+          path: ${{ runner.temp }}/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: VeyAmux-x86_64.AppImage
+          path: ${{ runner.temp }}/release
+
+      - name: Advance the fork and publish the verified build
+        env:
+          BASE: ${{ needs.prepare.outputs.base }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git bundle verify "$RUNNER_TEMP/source/candidate.bundle"
+          git fetch "$RUNNER_TEMP/source/candidate.bundle" refs/heads/sync-candidate
+          [[ "$(git rev-parse FETCH_HEAD)" == "$COMMIT" ]]
+          git merge-base --is-ancestor "$BASE" "$COMMIT"
+          read -r tip _ < <(git ls-remote --exit-code origin refs/heads/main)
+          if [[ "$tip" != "$BASE" && "$tip" != "$COMMIT" ]]; then
+            echo '::error::Fork main changed during the build. Run sync again against the new main.'
+            exit 1
+          fi
+          git push --atomic origin "$COMMIT:refs/heads/main" "$COMMIT:refs/tags/$TAG"
+
+          # Install both assets on a draft before making the new version downloadable.
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            gh release create "$TAG" --verify-tag --draft --title "VeyAmux $TAG" --generate-notes
+          elif [[ "$draft" == false ]]; then
+            exit 0
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/release/VeyAmux-x86_64.AppImage" \
+            "$RUNNER_TEMP/release/VeyAmux-x86_64.AppImage.zsync" --clobber
+          read -r tip _ < <(git ls-remote --exit-code origin refs/heads/main)
+          latest=false
+          if [[ "$tip" == "$COMMIT" ]]; then latest=true; fi
+          gh release edit "$TAG" --draft=false --latest="$latest"

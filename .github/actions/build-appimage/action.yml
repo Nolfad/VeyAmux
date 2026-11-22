@@ -1,0 +1,46 @@
+name: Build AppImage
+description: Compile and package the fork, verify its update source and upload the release assets.
+inputs:
+  version:
+    description: Optional version embedded in this build.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake ninja-build g++ pkg-config patchelf file python3 curl glslang-tools zsync \
+          qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-svg-dev qt6-wayland qt6-shader-baker \
+          qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-layouts qml6-module-qtqml-workerscript \
+          libvulkan-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev \
+          libpulse-dev libva-dev libpipewire-0.3-dev \
+          libssl-dev libcurl4-openssl-dev libjson-c-dev libminiupnpc-dev libevent-dev libopus-dev
+
+    - name: Build AppImage
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        VEYAMUX_RELEASE_VERSION: ${{ inputs.version }}
+      shell: bash
+      run: |
+        export VEYAMUX_UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest|VeyAmux-x86_64.AppImage.zsync"
+        ./scripts/build-appimage.sh
+        image=dist/VeyAmux-x86_64.AppImage
+        test -s "$image.zsync"
+        if [[ -n "$VEYAMUX_RELEASE_VERSION" ]]; then
+          strings -e l build/AppDir/usr/bin/veyamux | grep -Fx "$VEYAMUX_RELEASE_VERSION" > /dev/null
+        fi
+        value=$(readelf --string-dump=.upd_info "$image" | awk '/\[/{ print $NF }')
+        [[ "$value" == "$VEYAMUX_UPDATE_INFO" ]]
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: VeyAmux-x86_64.AppImage
+        if-no-files-found: error
+        overwrite: true
+        path: |
+          dist/VeyAmux-x86_64.AppImage
+          dist/VeyAmux-x86_64.AppImage.zsync
