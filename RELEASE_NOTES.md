@@ -1,7 +1,7 @@
-## VeyAmux 1.7 NVIDIA test2.1
+## VeyAmux 1.7 NVIDIA test2.2
 
-O atualizador interno permanece desativado independentemente do nome da versão. O AppImage publicado usa o canal de atualização do fork Nolfad/VeyAmux.
+O VeyAmux pede ao ambiente de trabalho para manter a tela ligada durante a exibição de vídeo. Isso inclui o jogo que chega pela placa de captura, mesmo com o controle conectado diretamente ao console. Ao parar a exibição, o sistema volta a seguir o tempo de inatividade configurado.
 
-Esta edição oferece DLSS Super Resolution e geração de quadros via NVIDIA VFG no Linux. Os testes dos recursos NVIDIA foram feitos na série GeForce RTX 30. A compatibilidade com outras séries RTX ainda não foi verificada.
+Esta edição mantém o DLSS Super Resolution e a geração de quadros NVIDIA VFG no Linux. O AppImage recebe atualizações pelo canal do fork Nolfad/VeyAmux.
 
 Baixe `VeyAmux-x86_64.AppImage`, dê permissão de execução e abra-o.

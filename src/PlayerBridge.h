@@ -1,6 +1,7 @@
 // QML-facing wrapper around veyamux::MediaEngine.
 #pragma once
 #include "AppUpdate.h"
+#include "DisplayIdleInhibitor.h"
 #include <algorithm>
 #include <cmath>
 #include <QElapsedTimer>
@@ -334,7 +335,12 @@ public:
     void setWindow(QWindow* w) {
         window_ = w;
         refreshEdidPeak();
-        if (w) connect(w, &QWindow::screenChanged, this, [this] { refreshEdidPeak(); applyEnhance(); });
+        if (w) {
+            connect(w, &QWindow::screenChanged, this, [this] { refreshEdidPeak(); applyEnhance(); });
+            connect(w, &QWindow::visibilityChanged, this, &PlayerBridge::updateDisplayIdle);
+            connect(w, &QObject::destroyed, this, [this] { displayIdle_.setActive(false); });
+        }
+        updateDisplayIdle();
     }
     QString translateMessage(const QString& msg) const;
     int fxaaQuality() const { return s_.fxaaQuality; }
@@ -405,6 +411,7 @@ public:
     LiveVulkan* liveVulkan() const { return liveVk_; }
     // Save settings and release the capture card/audio right away (called on quit, before the exit watchdog starts).
     void shutdown() {
+        displayIdle_.setActive(false);
         saveSettings(); QSettings().sync();
         if (liveVk_) { liveVk_->setStream(-1, nullptr); liveVk_->setRecord(-1, nullptr); }
         if (rec_ && rec_->recording()) rec_->stopRecording();
@@ -630,6 +637,8 @@ private:
     void psSay(const QString& message, bool error);
     bool psStart(const QString& id, QString& error);
     LiveVulkan* liveVk_ = nullptr;
+    void updateDisplayIdle();
+    DisplayIdleInhibitor displayIdle_;
     QPointer<QWindow> window_;
     QString openFile_;              // the video file that is open (to reopen it after a restart)
     bool lsfgOffPending_ = false;   // a restart without lsfg-vk is on its way

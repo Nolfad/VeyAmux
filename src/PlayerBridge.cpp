@@ -41,6 +41,8 @@ using veyamux::MediaEngine;
 
 PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
     : QObject(parent), engine_(shaderDir.toStdString()), rec_(std::make_unique<veyamux::Recorder>()) {
+    connect(this, &PlayerBridge::playingChanged, this, &PlayerBridge::updateDisplayIdle);
+    connect(this, &PlayerBridge::mediaChanged, this, &PlayerBridge::updateDisplayIdle);
     QSettings local;
     const QSettings original("VeyAmux", "VeyAmux");
     setTheme(local.value("ui/theme", original.value("ui/theme", "vice")).toString());
@@ -183,6 +185,11 @@ PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
     // updates: asked by itself a few seconds after the start (not while the first picture is being set up)
     if (inAppUpdatesEnabled() && autoUpdateCheck() && qEnvironmentVariable("VEYAMUX_NO_UPDATE_CHECK") != "1")
         QTimer::singleShot(8000, this, [this] { checkForUpdate(false); });
+}
+
+void PlayerBridge::updateDisplayIdle() {
+    const bool visible = window_ && window_->isVisible() && window_->visibility() != QWindow::Minimized;
+    displayIdle_.setActive(visible && engine_.isOpen() && engine_.playing() && engine_.info().hasVideo);
 }
 
 PlayerBridge::~PlayerBridge() {
