@@ -1,6 +1,6 @@
 # Builds VeyAmux-x86_64.AppImage (+ .zsync for automatic updates) on GitHub.
 # - Every push to main / pull request: build and keep the AppImage as a workflow artifact (Actions tab).
-# - Pushing a tag such as VeyAmux-V.1.0: build and publish a GitHub release with both files attached.
+# - Push a version tag or a main commit titled "Release v1.2.3" to publish both files.
 name: AppImage
 
 on:
@@ -49,11 +49,30 @@ jobs:
             ${{ env.SRC }}/dist/VeyAmux-x86_64.AppImage
             ${{ env.SRC }}/dist/VeyAmux-x86_64.AppImage.zsync
 
+      - name: Select release tag
+        id: release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF_NAME" == main ]]; then
+            title=${COMMIT_MESSAGE%%$'\n'*}
+            if [[ "$title" =~ ^Release\ (v[0-9]+(\.[0-9]+)+([-+][0-9A-Za-z.-]+)?)$ ]]; then
+              echo "tag=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.release.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ startsWith(github.ref_name, 'VeyAmux-') && github.ref_name || format('VeyAmux {0}', github.ref_name) }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(steps.release.outputs.tag, 'VeyAmux-') && steps.release.outputs.tag || format('VeyAmux {0}', steps.release.outputs.tag) }}
+          fail_on_unmatched_files: true
           make_latest: true
           # the description: RELEASE_NOTES.md (what is new), then GitHub's generated changelog link
           body_path: ${{ env.SRC }}/RELEASE_NOTES.md
