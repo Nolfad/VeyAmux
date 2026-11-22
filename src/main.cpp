@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
 
     QCoreApplication::setOrganizationName("VeyAmux");
     QCoreApplication::setApplicationName("VeyAmuxNvidiaTest");
-    QCoreApplication::setApplicationVersion("1.7-nvidia-test2");
+    QCoreApplication::setApplicationVersion(QStringLiteral(VEYAMUX_RELEASE_VERSION));
     // `--watch`: no window, only the capture-card watcher (started from ~/.config/autostart)
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--watch") == 0) {

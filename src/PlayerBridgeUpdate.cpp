@@ -19,7 +19,7 @@ QString PlayerBridge::appVersion() const { return QCoreApplication::applicationV
 bool PlayerBridge::updateSelf() const { return !update::appImagePath().isEmpty(); }
 
 void PlayerBridge::checkForUpdate(bool manual) {
-    if (appVersion().contains("-nvidia")) return;
+    if (!inAppUpdatesEnabled()) return;
     if (updState_ == "checking" || updState_ == "downloading") return;
     if (!manual) {   // automatic: at most every 12 hours
         const qint64 last = QSettings().value("update/lastCheck", 0).toLongLong();
@@ -64,7 +64,7 @@ void PlayerBridge::checkForUpdate(bool manual) {
 }
 
 void PlayerBridge::installUpdate() {
-    if (appVersion().contains("-nvidia")) return;
+    if (!inAppUpdatesEnabled()) return;
     if (updState_ == "downloading" || updState_ == "ready") return;
     if (!updateSelf()) { openReleasePage(); return; }
     updState_ = "downloading";
@@ -105,6 +105,6 @@ void PlayerBridge::installUpdate() {
 }
 
 void PlayerBridge::openReleasePage() {
-    QDesktopServices::openUrl(QUrl(updRelease_.page.isEmpty() ? QStringLiteral("https://github.com/8BiTw0LF/VeyAmux/releases/latest")
+    QDesktopServices::openUrl(QUrl(updRelease_.page.isEmpty() ? QStringLiteral("https://github.com/Nolfad/VeyAmux/releases/latest")
                                                                : updRelease_.page));
 }

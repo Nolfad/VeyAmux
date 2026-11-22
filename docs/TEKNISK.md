@@ -489,7 +489,7 @@ Profiler gemmer billedindstillingerne og lydforsinkelsen under et navn (taster 1
 lyden forsinkes med en forsinkelseslinje; filer: billedets tidsplan flyttes).
 
 ## Opdateringer
-AppImage'en har opdateringsinfo `gh-releases-zsync|8BiTw0LF|VeyAmux|latest|VeyAmux-x86_64.AppImage.zsync`
+AppImage'en har opdateringsinfo `gh-releases-zsync|Nolfad|VeyAmux|latest|VeyAmux-x86_64.AppImage.zsync`
 (`VEYAMUX_UPDATE_INFO` ved bygning). Læg både `.AppImage` og `.AppImage.zsync` op i hver GitHub-release; Gear Lever og
 AppImageUpdate henter så kun ændringerne.
 
@@ -578,7 +578,7 @@ connection tracking (en firewall slipper det igennem), hvad svaret på en broadc
 registreres direkte på adressen (`psRegister("ip:<adresse>")`); id'et bliver så konsollens MAC fra registreringen.
 
 ## Opdatering inde fra appen
-`src/AppUpdate.cpp`: spørger `api.github.com/repos/8BiTw0LF/VeyAmux/releases/latest`, henter `VeyAmux-x86_64.AppImage`
+`src/AppUpdate.cpp`: spørger `api.github.com/repos/Nolfad/VeyAmux/releases/latest`, henter `VeyAmux-x86_64.AppImage`
 til `$APPIMAGE.download`, tjekker GitHubs SHA-256 for filen (ellers SHA-1 fra `.zsync`), gør den kørbar og `rename()`r
 den over `$APPIMAGE`. Den kørende kopi fortsætter til genstart. Automatisk søgning højst hver 12. time
 (`update/lastCheck`); `veyamux-update-test [install]` tester det.

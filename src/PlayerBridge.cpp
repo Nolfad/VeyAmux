@@ -181,7 +181,7 @@ PlayerBridge::PlayerBridge(const QString& shaderDir, QObject* parent)
     });
     tick_.start();
     // updates: asked by itself a few seconds after the start (not while the first picture is being set up)
-    if (!appVersion().contains("-nvidia") && autoUpdateCheck() && qEnvironmentVariable("VEYAMUX_NO_UPDATE_CHECK") != "1")
+    if (inAppUpdatesEnabled() && autoUpdateCheck() && qEnvironmentVariable("VEYAMUX_NO_UPDATE_CHECK") != "1")
         QTimer::singleShot(8000, this, [this] { checkForUpdate(false); });
 }
 

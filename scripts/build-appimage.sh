@@ -14,7 +14,11 @@ if [[ ! -f "$ROOT/.tools/dlss/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.1
 fi
 T="$ROOT/.tools"; export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1   # works without FUSE (containers/CI)
 
-cmake -G Ninja -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DVEYAMUX_DXC_ROOT="$T/dxc" "$@"
+version_args=()
+if [[ -n "${VEYAMUX_RELEASE_VERSION:-}" ]]; then
+  version_args=("-DVEYAMUX_RELEASE_VERSION=$VEYAMUX_RELEASE_VERSION")
+fi
+cmake -G Ninja -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DVEYAMUX_DXC_ROOT="$T/dxc" "${version_args[@]}" "$@"
 cmake --build "$BUILD" --target veyamux veyamux-nvidia-vfg-probe
 rm -rf "$APPDIR"; DESTDIR="$APPDIR" cmake --install "$BUILD"
 

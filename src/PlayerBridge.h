@@ -164,6 +164,7 @@ class PlayerBridge : public QObject {
     Q_PROPERTY(QString updateVersion READ updateVersion NOTIFY updateChanged)
     Q_PROPERTY(QString updateText READ updateText NOTIFY updateChanged)
     Q_PROPERTY(QString updateNotes READ updateNotes NOTIFY updateChanged)
+    Q_PROPERTY(bool inAppUpdatesEnabled READ inAppUpdatesEnabled CONSTANT)
     Q_PROPERTY(bool updateSelf READ updateSelf CONSTANT)   // runs as an AppImage that can be replaced
     Q_PROPERTY(bool autoUpdateCheck READ autoUpdateCheck WRITE setAutoUpdateCheck NOTIFY updateChanged)
     Q_PROPERTY(QString appVersion READ appVersion CONSTANT)   // clip markers in the recording that runs
@@ -437,6 +438,7 @@ public:
     QString updateVersion() const { return updRelease_.version; }
     QString updateText() const { return updText_; }
     QString updateNotes() const { return updRelease_.notes; }
+    bool inAppUpdatesEnabled() const { return update::inAppUpdatesEnabled; }
     bool updateSelf() const;
     bool autoUpdateCheck() const { return QSettings().value("update/auto", true).toBool(); }
     void setAutoUpdateCheck(bool v) { QSettings().setValue("update/auto", v); emit updateChanged(); }

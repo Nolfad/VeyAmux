@@ -1,6 +1,6 @@
 // VeyAmux for Linux: updates from inside the app (no Gear Lever or AppImageUpdate needed).
 //
-// The newest release is asked from GitHub's API (api.github.com/repos/8BiTw0LF/VeyAmux/releases/latest). When it is
+// The newest release is asked from GitHub's API (api.github.com/repos/Nolfad/VeyAmux/releases/latest). When it is
 // newer than this version, VeyAmux downloads its VeyAmux-x86_64.AppImage next to the running one, checks it (the
 // SHA-256 GitHub records for the release file, or else the SHA-1 in the release's .zsync file), makes it executable
 // and puts it in place of the running AppImage under the same name, so a Steam shortcut, Gear Lever entry or desktop
@@ -11,6 +11,9 @@
 #include <functional>
 
 namespace update {
+
+// Fork releases use the AppImage update channel regardless of their version suffix.
+inline constexpr bool inAppUpdatesEnabled = false;
 
 struct Release {
     QString tag;          // "VeyAmux-V.1.6"

@@ -478,8 +478,6 @@ Rectangle {
                     Sep {}
                     // ---- updates
                     Column {
-                        readonly property bool localBuild: player.appVersion.includes("-nvidia")
-                        id: updatePanel
                         width: parent.width; spacing: 10
                         Title { text: tr("updTitle") }
                         Text { font.family: Theme.font; width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 15
@@ -487,7 +485,7 @@ Rectangle {
                             text: tr("updVersion").replace("%1", player.appVersion) + (player.updateText !== "" ? "\n" + player.updateText : "") }
                         Flow {
                             width: parent.width; spacing: 8
-                            Btn { enabled: !updatePanel.localBuild; visible: player.updateState !== "available" && player.updateState !== "ready" && player.updateState !== "downloading"
+                            Btn { enabled: player.inAppUpdatesEnabled; visible: player.updateState !== "available" && player.updateState !== "ready" && player.updateState !== "downloading"
                                 text: tr("updCheck"); onClicked: player.checkForUpdate(true) }
                             Btn { visible: player.updateState === "available"; primary: true
                                 text: player.updateSelf ? tr("updInstall").replace("%1", player.updateVersion) : tr("updPage"); onClicked: player.installUpdate() }
@@ -495,8 +493,8 @@ Rectangle {
                             Btn { visible: player.updateState === "available" || player.updateState === "ready"; text: tr("updNotes"); onClicked: player.openReleasePage() }
                         }
                         Hint { visible: !player.updateSelf; text: tr("updNotSelf") }
-                        SwitchRow { text: tr("updAuto"); active: !updatePanel.localBuild; checked: !updatePanel.localBuild && player.autoUpdateCheck; onToggled: (v) => player.autoUpdateCheck = v }
-                        Hint { text: updatePanel.localBuild ? tr("nvidiaLocalUpdate") : tr("updAutoHint") }
+                        SwitchRow { text: tr("updAuto"); active: player.inAppUpdatesEnabled; checked: player.inAppUpdatesEnabled && player.autoUpdateCheck; onToggled: (v) => player.autoUpdateCheck = v }
+                        Hint { text: !player.inAppUpdatesEnabled ? tr("nvidiaLocalUpdate") : tr("updAutoHint") }
                     }
                     Sep {}
                     // ---- performance report

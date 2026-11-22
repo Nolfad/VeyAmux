@@ -18,7 +18,7 @@
 namespace update {
 namespace {
 
-constexpr const char* kApi = "https://api.github.com/repos/8BiTw0LF/VeyAmux/releases/latest";
+constexpr const char* kApi = "https://api.github.com/repos/Nolfad/VeyAmux/releases/latest";
 constexpr const char* kAsset = "VeyAmux-x86_64.AppImage";
 constexpr qint64 kMaxAppImage = 1024ll * 1024 * 1024;
 
